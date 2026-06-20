@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Klucze API
+.env
+
+# Baza danych
+*.db
+*.sqlite
+
+# Logi
+logs/
+*.log
+
+# Sygnały JSON
+signals_*.json
+heartbeat.json
