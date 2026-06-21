@@ -24,6 +24,9 @@ Historia zmian:
     v1.4 — podłączono prawdziwy PolygonAPI (DEMO_MODE = False)
            - Finnhub nadal Mock do czasu jego wrappera
            - Polygon: prawdziwy universe, newsy, historia wolumenu
+    v1.5 — podłączono prawdziwy FinnhubAPI (DEMO_MODE = False)
+           - wszystkie trzy źródła danych są teraz prawdziwe
+           - Polygon + UW + Finnhub: pełny LIVE mode bez Mock
 """
 
 import time
@@ -37,6 +40,7 @@ from config import (logger, CONFIG, DEMO_MODE, now_chicago,
 from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
 from polygon_api import PolygonAPI
+from finnhub_api import FinnhubAPI
 from pre_filter import get_top_tickers, uw_fast_track
 from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
@@ -67,12 +71,11 @@ class StockScanner:
             self.fh      = MockFinnhub()
             logger.info("Tryb DEMO — używam Mock API")
         else:
-            # Etap 2 — prawdziwe API
-            # Finnhub nadal Mock do czasu jego wrappera
+            # Etap 2 — wszystkie prawdziwe API
             self.polygon = PolygonAPI()        # ← prawdziwy Polygon
             self.uw      = UnusualWhalesAPI()  # ← prawdziwy UW
-            self.fh      = MockFinnhub()
-            logger.info("Tryb LIVE — Polygon: prawdziwy, UW: prawdziwy, Finnhub: Mock")
+            self.fh      = FinnhubAPI()        # ← prawdziwy Finnhub
+            logger.info("Tryb LIVE — Polygon: prawdziwy, UW: prawdziwy, Finnhub: prawdziwy")
 
         # Claude analityk
         self.analyst = ClaudeAnalyst()
