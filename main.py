@@ -30,6 +30,11 @@ Historia zmian:
     v1.6 — dodano AlpacaAPI jako backup danych rynkowych
            - get_ticker_with_fallback(): Polygon → Alpaca automatycznie
            - self.alpaca = None w trybie DEMO
+    v1.7 — dodano extended hours (pre/after-market) i manualną analizę
+           - pre-market: 4:00-8:30 CST, co 15 min, vol > 10k
+           - after-market: 15:00-20:00 CST, co 15 min, vol > 10k
+           - Claude tylko dla tickerów z katalizatorem w extended hours
+           - manual_queue: kolejka manualnych analiz z Telegram /analyze
 """
 
 import time
@@ -39,7 +44,8 @@ import threading
 from datetime import datetime, timedelta
 
 from config import (logger, CONFIG, DEMO_MODE, now_chicago,
-                    is_market_open, get_market_status)
+                    is_market_open, is_premarket, is_aftermarket,
+                    get_market_status, get_min_volume)
 from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
 from polygon_api import PolygonAPI
@@ -106,6 +112,14 @@ class StockScanner:
         # Cooldown triggerów — zapobiega re-analizie tego samego tickera
         # częściej niż raz na 5 minut
         self.trigger_cooldown = {}
+
+        # Extended hours
+        self.last_extended_scan = None
+
+        # Kolejka manualnych analiz (z Telegram /analyze TICKER)
+        self.manual_queue       = []
+        self.manual_cost_usd    = 0.0
+        self._manual_lock       = threading.Lock()
 
         # Sygnał Ctrl+C
         signal.signal(signal.SIGINT,  self._shutdown_handler)
@@ -399,6 +413,156 @@ class StockScanner:
         """
         return get_signal_history(ticker, limit)
 
+    # ==================== EXTENDED HOURS ====================
+
+    def run_extended_scan(self):
+        """
+        Skan pre-market lub after-market — co 15 minut.
+        Claude analizuje tylko tickery z katalizatorem (earnings, FDA, insider).
+        Wolumen minimalny: 10,000 (zamiast 100,000 podczas sesji).
+        """
+        status = get_market_status()
+        logger.info(f"=== CYKL EXTENDED HOURS ({status}) ===")
+
+        # Pobierz universe z niższym progiem wolumenu
+        universe = self.polygon.get_universe()
+        if not universe:
+            logger.info("Extended hours: brak danych z Polygon")
+            return
+
+        # Filtruj po niższym wolumenie dla extended hours
+        min_vol  = CONFIG['min_volume_extended']
+        filtered = [t for t in universe
+                    if t.get('volume', 0) >= min_vol]
+
+        if not filtered:
+            logger.info(f"Extended hours: brak tickerów z vol >= {min_vol:,}")
+            return
+
+        # Pobierz dane Finnhub
+        finnhub_cache = {}
+        for t in filtered:
+            ticker       = t['ticker']
+            t['earnings'] = self.fh.get_earnings_calendar(ticker)
+            t['insider']  = self.fh.get_insider_transactions(ticker)
+            if t['earnings'] or t['insider']:
+                finnhub_cache[ticker] = {
+                    'earnings': t['earnings'],
+                    'insider':  t['insider'],
+                }
+
+        # Tylko tickery z katalizatorem (jeśli tryb oszczędny)
+        if not CONFIG['claude_extended_hours_all']:
+            with_catalyst = [t for t in filtered
+                             if t.get('earnings') or t.get('insider')]
+            logger.info(f"Extended hours: {len(filtered)} tickerów → "
+                        f"{len(with_catalyst)} z katalizatorem")
+            if not with_catalyst:
+                logger.info("Extended hours: brak tickerów z katalizatorem")
+                return
+            filtered = with_catalyst
+
+        # Pre-filter → TOP 5
+        dark_pool = self.uw.get_dark_pool_flow()
+        top5 = get_top_tickers(
+            filtered,
+            dark_pool_flow=dark_pool,
+            finnhub_cache=finnhub_cache,
+            top_n=CONFIG['max_tickers_for_claude'],
+        )
+
+        if not top5:
+            return
+
+        # Analiza Claude
+        results = self.analyst.analyze_batch(
+            top5,
+            polygon_api=self.polygon,
+            uw_api=self.uw,
+            db=self,
+        )
+
+        for result, ticker_data in zip(results, top5):
+            save_signal(result, ticker_data)
+            self._send_alert(result, ticker_data)
+
+        self.last_extended_scan = now_chicago()
+        self.scan_count        += 1
+        logger.info(f"Extended hours: przeanalizowano {len(results)} tickerów")
+
+    # ==================== MANUALNA ANALIZA ====================
+
+    def queue_manual_analysis(self, ticker):
+        """
+        Dodaje ticker do kolejki manualnej analizy.
+        Wywoływane przez Telegram bot po komendzie /analyze TICKER.
+        """
+        ticker = ticker.upper().strip()
+        with self._manual_lock:
+            if ticker not in self.manual_queue:
+                self.manual_queue.append(ticker)
+                logger.info(f"Manual queue: dodano {ticker}")
+                return True
+        return False
+
+    def run_manual_analysis(self):
+        """
+        Przetwarza kolejkę manualnych analiz.
+        Wywołuje Claude dla każdego tickera z kolejki.
+        """
+        with self._manual_lock:
+            queue = self.manual_queue.copy()
+            self.manual_queue.clear()
+
+        if not queue:
+            return
+
+        budget = CONFIG['manual_analysis_budget_usd'] / 22
+        if self.manual_cost_usd >= budget:
+            logger.warning(f"Manual analysis: dzienny limit ${budget:.2f} "
+                           f"przekroczony")
+            return
+
+        for ticker in queue:
+            try:
+                logger.info(f"Manualna analiza: {ticker}")
+
+                # Pobierz dane
+                ticker_data = self.polygon.get_ticker_details(ticker)
+                if not ticker_data or ticker_data.get('price', 0) <= 0:
+                    if self.alpaca:
+                        ticker_data = self.alpaca.get_ticker_details(ticker)
+
+                if not ticker_data:
+                    logger.warning(f"Manualna analiza: brak danych dla {ticker}")
+                    continue
+
+                ticker_data['ticker']  = ticker
+                ticker_data['score']   = 50
+                ticker_data['reasons'] = ['Manualna analiza (żądanie użytkownika)']
+                ticker_data['earnings'] = self.fh.get_earnings_calendar(ticker)
+                ticker_data['insider']  = self.fh.get_insider_transactions(ticker)
+
+                result = self.analyst.analyze(
+                    ticker_data,
+                    news=self.polygon.get_news(ticker),
+                    options_flow=self.uw.get_options_flow(ticker),
+                    signal_history=get_signal_history(ticker),
+                )
+
+                # Śledź koszt manualnych analiz osobno
+                cost = CONFIG.get('cost_per_call_usd', 0.0028)
+                self.manual_cost_usd += cost
+
+                save_signal(result, ticker_data)
+                self._send_alert(result, ticker_data)
+
+                logger.info(f"Manualna analiza {ticker}: "
+                            f"{result['verdict']} ({result['confidence']})")
+
+            except Exception as e:
+                logger.error(f"Błąd manualnej analizy {ticker}: {e}")
+
     # ==================== GŁÓWNA PĘTLA ====================
 
     def run(self):
@@ -456,6 +620,29 @@ class StockScanner:
                         self.run_main_scan()
                     except Exception as e:
                         logger.error(f"Błąd cyklu głównego: {e}")
+
+                # Extended hours (pre/after-market) — co 15 minut
+                in_extended = (CONFIG['premarket_enabled'] and is_premarket()) or                               (CONFIG['aftermarket_enabled'] and is_aftermarket())
+
+                if in_extended:
+                    ext_interval = (CONFIG['premarket_scan_interval']
+                                    if is_premarket()
+                                    else CONFIG['aftermarket_scan_interval'])
+                    ext_due = (self.last_extended_scan is None or
+                               (now - self.last_extended_scan).total_seconds()
+                               >= ext_interval)
+                    if ext_due:
+                        try:
+                            self.run_extended_scan()
+                        except Exception as e:
+                            logger.error(f"Błąd extended hours: {e}")
+
+                # Manualna analiza z kolejki
+                if self.manual_queue:
+                    try:
+                        self.run_manual_analysis()
+                    except Exception as e:
+                        logger.error(f"Błąd manualnej analizy: {e}")
 
                 # Dashboard (co godzinę)
                 dashboard_due = (self.last_dashboard is None or
