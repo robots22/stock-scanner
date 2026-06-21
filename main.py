@@ -21,6 +21,9 @@ Historia zmian:
     v1.3 — podłączono prawdziwy UnusualWhalesAPI (DEMO_MODE = False)
            - Polygon i Finnhub nadal Mock do czasu ich wrapperów
            - UW: prawdziwy dark pool flow i options flow
+    v1.4 — podłączono prawdziwy PolygonAPI (DEMO_MODE = False)
+           - Finnhub nadal Mock do czasu jego wrappera
+           - Polygon: prawdziwy universe, newsy, historia wolumenu
 """
 
 import time
@@ -33,6 +36,7 @@ from config import (logger, CONFIG, DEMO_MODE, now_chicago,
                     is_market_open, get_market_status)
 from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
+from polygon_api import PolygonAPI
 from pre_filter import get_top_tickers, uw_fast_track
 from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
@@ -64,11 +68,11 @@ class StockScanner:
             logger.info("Tryb DEMO — używam Mock API")
         else:
             # Etap 2 — prawdziwe API
-            # Polygon i Finnhub nadal Mock do czasu ich wrapperów
-            self.polygon = MockPolygon()
+            # Finnhub nadal Mock do czasu jego wrappera
+            self.polygon = PolygonAPI()        # ← prawdziwy Polygon
             self.uw      = UnusualWhalesAPI()  # ← prawdziwy UW
             self.fh      = MockFinnhub()
-            logger.info("Tryb LIVE — UW: prawdziwy, Polygon/Finnhub: Mock")
+            logger.info("Tryb LIVE — Polygon: prawdziwy, UW: prawdziwy, Finnhub: Mock")
 
         # Claude analityk
         self.analyst = ClaudeAnalyst()
