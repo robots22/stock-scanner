@@ -12,6 +12,11 @@ Historia zmian:
            - monthly_budget_usd = $25.00
            - daily_budget_usd = $25/22 = ~$1.14/dzien
            - cost_per_call_usd = $0.0028
+    v1.3 — dodano parametry extended hours i manualnej analizy
+           - pre-market: 4:00-8:30 CST, co 15 min, vol > 10k
+           - after-market: 15:00-20:00 CST, co 15 min, vol > 10k
+           - Claude tylko dla earnings/FDA w extended hours
+           - osobny budzet dla manualnej analizy $2/mies
 """
 
 import os
@@ -84,6 +89,20 @@ CONFIG = {
     # Logi
     'log_dir': 'logs',
     'log_file': 'scanner.log',
+
+    # ==================== EXTENDED HOURS ====================
+    # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)
+    # After-market: 15:00-20:00 CST (16:00-21:00 ET)
+    'premarket_enabled':         True,
+    'aftermarket_enabled':       True,
+    'premarket_scan_interval':   900,    # co 15 minut
+    'aftermarket_scan_interval': 900,    # co 15 minut
+    'min_volume_extended':       10_000, # niższy próg poza godzinami
+
+    # Claude w extended hours — tylko dla tickerów z katalizatorem
+    # (earnings, FDA, insider) — oszczędność kosztów API
+    'claude_extended_hours_all':       False,  # False = tylko z katalizatorem
+    'claude_extended_hours_catalyst':  True,   # True = analizuj z katalizatorem
 }
 
 # ==================== CLAUDE AI ====================
@@ -96,9 +115,13 @@ CLAUDE_CONFIG = {
 
     # Twardy limit kosztów Claude API
     # System zatrzymuje wywołania Claude gdy limit dzienny zostanie przekroczony
-    'monthly_budget_usd':   25.00,
-    'daily_budget_usd':     25.00 / 22,   # ~$1.14/dzień (22 dni handlowe)
-    'cost_per_call_usd':    0.0028,        # Sonnet: ~500 in + 200 out tokenów
+    'monthly_budget_usd':        25.00,
+    'daily_budget_usd':          25.00 / 22,  # ~$1.14/dzień (22 dni handlowe)
+    'cost_per_call_usd':         0.0028,       # Sonnet: ~500 in + 200 out tokenów
+
+    # Osobny budżet dla manualnej analizy (Telegram /analyze)
+    # Nie wlicza się w dzienny limit automatycznych skanów
+    'manual_analysis_budget_usd': 2.00,        # $2/miesiąc osobno
 
     # System prompt dla Claude — analityk giełdowy
     'system_prompt': """Jesteś doświadczonym analitykiem giełdowym specjalizującym się 
@@ -139,14 +162,42 @@ def is_market_open():
     market_close = n.replace(hour=15, minute=0,  second=0, microsecond=0)
     return market_open <= n <= market_close
 
+def is_premarket():
+    """Czy trwa pre-market (4:00-8:30 CST)"""
+    n = now_chicago()
+    if n.weekday() >= 5:
+        return False
+    premarket_open  = n.replace(hour=4,  minute=0,  second=0, microsecond=0)
+    premarket_close = n.replace(hour=8,  minute=30, second=0, microsecond=0)
+    return premarket_open <= n < premarket_close
+
+def is_aftermarket():
+    """Czy trwa after-market (15:00-20:00 CST)"""
+    n = now_chicago()
+    if n.weekday() >= 5:
+        return False
+    aftermarket_open  = n.replace(hour=15, minute=0,  second=0, microsecond=0)
+    aftermarket_close = n.replace(hour=20, minute=0,  second=0, microsecond=0)
+    return aftermarket_open <= n < aftermarket_close
+
 def get_market_status():
     """Zwraca status rynku jako string"""
     n = now_chicago()
     if n.weekday() >= 5:
         return "WEEKEND"
+    if is_premarket():
+        return "PRE-MARKET"
     if is_market_open():
         return "OPEN"
+    if is_aftermarket():
+        return "AFTER-MARKET"
     return "CLOSED"
+
+def get_min_volume():
+    """Zwraca minimalny wolumen zależnie od sesji"""
+    if is_market_open():
+        return CONFIG["min_volume"]
+    return CONFIG["min_volume_extended"]
 
 # ==================== LOGOWANIE ====================
 os.makedirs(CONFIG['log_dir'], exist_ok=True)
@@ -208,4 +259,7 @@ if __name__ == "__main__":
     print(f"  Tickerów/cykl: {CONFIG['max_tickers_for_claude']} (do Claude AI)")
     print(f"  Cykl główny:   co {CONFIG['main_scan_interval']//60} minuty")
     print(f"  Cykl UW:       co {CONFIG['uw_scan_interval']} sekundy")
+    print(f"  Pre-market:    {'✅ włączony' if CONFIG['premarket_enabled'] else '❌ wyłączony'} (co {CONFIG['premarket_scan_interval']//60} min)")
+    print(f"  After-market:  {'✅ włączony' if CONFIG['aftermarket_enabled'] else '❌ wyłączony'} (co {CONFIG['aftermarket_scan_interval']//60} min)")
+    print(f"  Min vol ext:   {CONFIG['min_volume_extended']:,}")
     print(f"  Telegram:      {'✅ włączony' if CONFIG['telegram_enabled'] else '❌ wyłączony'}")
