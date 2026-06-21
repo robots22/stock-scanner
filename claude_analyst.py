@@ -3,6 +3,13 @@
 STOCK SCANNER - PLIK 4: CLAUDE AI ANALITYK
 Zapisz jako claude_analyst.py w folderze stock-scanner
 
+Historia zmian:
+    v1.0 — pierwsza wersja
+    v1.1 — twardy limit dzienny kosztów Claude API
+           - daily_budget_usd z config.py (~$1.14/dzien = $25/miesiac)
+           - reset licznika o polnocy
+           - przy przekroczeniu limitu zwraca WATCH zamiast wywolywac API
+
 Zadanie: analizuje TOP 5 tickerów i wydaje werdykt
 BUY / WATCH / AVOID + uzasadnienie.
 
@@ -285,8 +292,11 @@ class ClaudeAnalyst:
             self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             logger.info("ClaudeAnalyst: tryb LIVE (prawdziwe API)")
 
-        self.total_calls    = 0
-        self.total_cost_usd = 0.0
+        self.total_calls      = 0
+        self.total_cost_usd   = 0.0
+        self.daily_cost_usd   = 0.0
+        self.daily_reset_date = now_chicago().date()
+        self.budget_exceeded  = False
 
     def analyze(self, ticker_data, news=None, options_flow=None,
                 signal_history=None):
@@ -301,6 +311,32 @@ class ClaudeAnalyst:
         ticker = ticker_data.get('ticker', 'UNKNOWN')
         news           = news or []
         signal_history = signal_history or []
+
+        # Resetuj dzienny licznik jeśli nowy dzień
+        today = now_chicago().date()
+        if today != self.daily_reset_date:
+            self.daily_cost_usd   = 0.0
+            self.daily_reset_date = today
+            self.budget_exceeded  = False
+            logger.info("Claude: reset dziennego budżetu")
+
+        # Sprawdź dzienny limit kosztów
+        daily_budget = CLAUDE_CONFIG.get('daily_budget_usd', 1.14)
+        if self.daily_cost_usd >= daily_budget and not self.demo_mode:
+            logger.warning(
+                f"Claude: dzienny limit ${daily_budget:.2f} przekroczony "
+                f"(${self.daily_cost_usd:.4f}) — pomijam {ticker}"
+            )
+            self.budget_exceeded = True
+            return {
+                'ticker':        ticker,
+                'verdict':       'WATCH',
+                'confidence':    'NISKA',
+                'justification': f'Dzienny limit Claude API ${daily_budget:.2f} przekroczony.',
+                'risk':          'Brak analizy AI — sprawdź rano.',
+                'raw_response':  'BUDGET_EXCEEDED',
+                'timestamp':     now_chicago().isoformat(),
+            }
 
         logger.info(f"Claude analizuje: {ticker}")
 
@@ -404,8 +440,14 @@ class ClaudeAnalyst:
             output_tokens = response.usage.output_tokens
             cost = (input_tokens * 3 + output_tokens * 15) / 1_000_000
             self.total_cost_usd += cost
-            logger.info(f"Claude API: {input_tokens} in / {output_tokens} out | "
-                        f"koszt: ${cost:.4f} | łącznie: ${self.total_cost_usd:.4f}")
+            self.daily_cost_usd += cost
+
+            daily_budget = CLAUDE_CONFIG.get('daily_budget_usd', 1.14)
+            logger.info(
+                f"Claude API: {input_tokens} in / {output_tokens} out | "
+                f"koszt: ${cost:.4f} | dzisiaj: ${self.daily_cost_usd:.4f}/${daily_budget:.2f} | "
+                f"łącznie: ${self.total_cost_usd:.4f}"
+            )
 
             return parse_claude_response(response_text, ticker)
 

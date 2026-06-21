@@ -8,6 +8,16 @@ Uruchomienie:
 
 Zatrzymanie:
     Ctrl+C
+
+Historia zmian:
+    v1.0 — pierwsza wersja, monitoring przez Polygon (price_snapshots)
+    v1.1 — monitoring przeniesiony na Unusual Whales (dark pool + options flow)
+           - usunięto save_price_snapshot() z cyklu UW
+           - _check_active_signals() pobiera UW options flow i dark pool co minute
+           - triggery: TAKE_PROFIT, PRICE_REVERSAL, DARKPOOL_SELL,
+                       OPTIONS_BEARISH, UW_ACTIVITY_GONE
+    v1.2 — dodano trigger_cooldown (5 min) dla aktywnych BUY
+           - zapobiega mnozeniu re-analiz tego samego tickera co minute
 """
 
 import time
@@ -24,7 +34,7 @@ from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
                       get_active_buy_signals, check_retrigger_conditions,
                       save_retrigger, close_signal, update_outcomes,
-                      save_price_snapshot, get_stats)
+                      get_stats)
 from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message)
@@ -68,6 +78,10 @@ class StockScanner:
 
         # Cooldown alertów — zapobiega duplikatom
         self.alert_cooldown = {}
+
+        # Cooldown triggerów — zapobiega re-analizie tego samego tickera
+        # częściej niż raz na 5 minut
+        self.trigger_cooldown = {}
 
         # Sygnał Ctrl+C
         signal.signal(signal.SIGINT,  self._shutdown_handler)
@@ -202,45 +216,66 @@ class StockScanner:
             ticker = sig['ticker']
 
             try:
-                # Pobierz aktualną cenę
+                # Cooldown — nie re-analizuj tego samego tickera
+                # częściej niż co 5 minut
+                last_trigger = self.trigger_cooldown.get(ticker)
+                if last_trigger:
+                    elapsed = (now_chicago() - last_trigger).total_seconds()
+                    if elapsed < 300:
+                        continue
+
+                # Pobierz dane UW dla tickera (główne źródło monitoringu)
+                options_flow   = self.uw.get_options_flow(ticker)
+                dark_pool_flow = self.uw.get_dark_pool_flow()
+                dp_for_ticker  = next(
+                    (dp for dp in dark_pool_flow
+                     if dp.get('ticker') == ticker), {}
+                )
+
+                # Pobierz cenę z Polygon (tylko dla price triggers)
                 current_data = self.polygon.get_ticker_details(ticker)
-                if not current_data:
-                    continue
 
-                # Zapisz snapshot
-                current_data['ticker'] = ticker
-                save_price_snapshot(current_data)
+                # Złącz dane UW z ceną
+                uw_data = {
+                    **(options_flow or {}),
+                    'price':          current_data.get('price', sig['price']),
+                    'dark_pool_side': dp_for_ticker.get('side', ''),
+                    'dark_pool_size': dp_for_ticker.get('size_usd', 0),
+                }
 
-                # Sprawdź triggery
+                # Sprawdź triggery oparte na UW
                 trigger, details = check_retrigger_conditions(
-                    sig, current_data
+                    sig, uw_data
                 )
 
                 if not trigger:
                     continue
 
                 logger.info(f"Trigger [{trigger}] dla {ticker}: {details}")
+                self.trigger_cooldown[ticker] = now_chicago()
+
+                current_price = uw_data.get('price', sig['price'])
 
                 # Take profit — alert bez re-analizy Claude'a
                 if trigger == 'TAKE_PROFIT':
-                    gain = ((current_data['price'] - sig['price'])
+                    gain = ((current_price - sig['price'])
                             / sig['price'] * 100)
                     alert_take_profit(ticker, sig['price'],
-                                      current_data['price'], gain)
+                                      current_price, gain)
                     save_retrigger(sig['id'], ticker, trigger,
                                    details, 'BUY', None)
                     close_signal(sig['id'], f"TAKE_PROFIT +{gain:.1f}%")
                     continue
 
-                # Volume drop lub price reversal — re-analiza przez Claude
+                # Trigger UW — re-analiza przez Claude
                 ticker_data = {
                     'ticker':       ticker,
-                    'price':        current_data.get('price', 0),
+                    'price':        current_price,
                     'change_pct':   current_data.get('change_pct', 0),
                     'volume':       current_data.get('volume', 0),
                     'volume_ratio': current_data.get('volume_ratio', 1.0),
                     'score':        40,
-                    'reasons':      [f"RE-ANALIZA: {details}"],
+                    'reasons':      [f"RE-ANALIZA UW: {details}"],
                 }
 
                 new_result = self.analyst.analyze(
@@ -262,7 +297,7 @@ class StockScanner:
                     details=details,
                     old_verdict='BUY',
                     new_verdict=new_verdict,
-                    current_price=current_data.get('price', 0),
+                    current_price=current_price,
                     entry_price=sig['price'],
                 )
 

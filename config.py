@@ -2,6 +2,16 @@
 """
 STOCK SCANNER - PLIK 1: KONFIGURACJA
 Zapisz jako config.py w folderze stock-scanner
+
+Historia zmian:
+    v1.0 — pierwsza wersja
+    v1.1 — fix logowania UTF-8 dla Windows (polskie znaki, strzalki)
+           - FileHandler z encoding=utf-8
+           - StreamHandler z stdout przepisanym na UTF-8
+    v1.2 — twardy limit kosztów Claude API
+           - monthly_budget_usd = $25.00
+           - daily_budget_usd = $25/22 = ~$1.14/dzien
+           - cost_per_call_usd = $0.0028
 """
 
 import os
@@ -84,6 +94,12 @@ CLAUDE_CONFIG = {
     # Ile ostatnich sygnałów dla danego tickera wysyłamy jako kontekst
     'signal_history_count': 5,
 
+    # Twardy limit kosztów Claude API
+    # System zatrzymuje wywołania Claude gdy limit dzienny zostanie przekroczony
+    'monthly_budget_usd':   25.00,
+    'daily_budget_usd':     25.00 / 22,   # ~$1.14/dzień (22 dni handlowe)
+    'cost_per_call_usd':    0.0028,        # Sonnet: ~500 in + 200 out tokenów
+
     # System prompt dla Claude — analityk giełdowy
     'system_prompt': """Jesteś doświadczonym analitykiem giełdowym specjalizującym się 
 w small-cap stocks (poniżej $15). Twoim zadaniem jest analiza danych rynkowych 
@@ -135,12 +151,18 @@ def get_market_status():
 # ==================== LOGOWANIE ====================
 os.makedirs(CONFIG['log_dir'], exist_ok=True)
 
+# UTF-8 dla logów — fix dla Windows cp1252 (polskie znaki, strzałki)
+_stdout_utf8 = open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
     handlers=[
-        logging.FileHandler(f"{CONFIG['log_dir']}/{CONFIG['log_file']}"),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler(
+            f"{CONFIG['log_dir']}/{CONFIG['log_file']}",
+            encoding='utf-8'
+        ),
+        logging.StreamHandler(_stdout_utf8)
     ]
 )
 logger = logging.getLogger(__name__)

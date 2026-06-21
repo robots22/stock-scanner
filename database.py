@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-STOCK SCANNER - PLIK 5: BAZA DANYCH
+STOCK SCANNER - PLIK 5: BAZA DANYCH (v2)
 Zapisz jako database.py w folderze stock-scanner
 
-Zadanie:
-- Zapisuje wszystkie sygnały Claude'a
-- Automatycznie sprawdza wyniki po 1h, 4h, 24h
-- Monitoruje aktywne BUY pod kątem triggerów re-analizy
-- Dostarcza historię sygnałów jako kontekst dla Claude'a
+Zmiany v2:
+- Usunięto tabelę price_snapshots (monitoring przez UW zamiast DB)
+- check_retrigger_conditions() teraz przyjmuje dane UW (dark pool + options)
+- Czystsza architektura — DB tylko do sygnałów i historii
 """
 
 import sqlite3
@@ -21,7 +20,7 @@ from config import logger, CONFIG, now_chicago
 def get_connection():
     """Zwraca połączenie z bazą danych"""
     conn = sqlite3.connect(CONFIG['db_path'])
-    conn.row_factory = sqlite3.Row  # wyniki jako dict-like obiekty
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -84,21 +83,8 @@ def init_db():
             )
         ''')
 
-        # Tabela snapshots cen (do monitorowania)
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS price_snapshots (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker      TEXT NOT NULL,
-                timestamp   TEXT NOT NULL,
-                price       REAL,
-                volume      INTEGER,
-                volume_ratio REAL,
-                change_pct  REAL
-            )
-        ''')
-
         conn.commit()
-        logger.info("Baza danych zainicjowana")
+        logger.info("Baza danych zainicjowana (v2 — bez price_snapshots)")
 
     finally:
         conn.close()
@@ -110,9 +96,6 @@ def save_signal(result, ticker_data):
     """
     Zapisuje sygnał Claude'a do bazy.
     Aktywuje monitorowanie dla sygnałów BUY.
-
-    result      — dict z claude_analyst.analyze()
-    ticker_data — dict z pre_filter (cena, wolumen, itp.)
     """
     conn = get_connection()
     try:
@@ -121,7 +104,6 @@ def save_signal(result, ticker_data):
         verdict    = result.get('verdict', 'WATCH')
         monitoring = 1 if verdict == 'BUY' else 0
 
-        # Monitoruj przez 2h po sygnale BUY
         monitoring_end = None
         if monitoring:
             end_time = now_chicago() + timedelta(hours=2)
@@ -157,37 +139,13 @@ def save_signal(result, ticker_data):
         conn.commit()
 
         if monitoring:
-            logger.info(f"DB: zapisano sygnał BUY dla {result.get('ticker')} "
-                        f"(id={signal_id}) — monitorowanie aktywne do "
-                        f"{monitoring_end[:16]}")
+            logger.info(f"DB: BUY {result.get('ticker')} (id={signal_id}) "
+                        f"— monitoring do {monitoring_end[:16]}")
         else:
-            logger.info(f"DB: zapisano sygnał {verdict} dla "
-                        f"{result.get('ticker')} (id={signal_id})")
+            logger.info(f"DB: {verdict} {result.get('ticker')} (id={signal_id})")
 
         return signal_id
 
-    finally:
-        conn.close()
-
-
-def save_price_snapshot(ticker_data):
-    """Zapisuje snapshot ceny dla monitorowanych tickerów"""
-    conn = get_connection()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO price_snapshots
-            (ticker, timestamp, price, volume, volume_ratio, change_pct)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            ticker_data.get('ticker'),
-            now_chicago().isoformat(),
-            ticker_data.get('price', 0),
-            ticker_data.get('volume', 0),
-            ticker_data.get('volume_ratio', 1.0),
-            ticker_data.get('change_pct', 0),
-        ))
-        conn.commit()
     finally:
         conn.close()
 
@@ -215,7 +173,6 @@ def get_signal_history(ticker, limit=5):
         history = []
 
         for row in rows:
-            # Formatuj datę czytelnie
             try:
                 dt = datetime.fromisoformat(row['timestamp'])
                 date_str = dt.strftime('%Y-%m-%d %H:%M')
@@ -253,7 +210,6 @@ def update_outcomes(polygon_api):
         c = conn.cursor()
         now = now_chicago()
 
-        # Pobierz sygnały bez kompletnych wyników
         c.execute('''
             SELECT id, ticker, timestamp, price, verdict
             FROM signals
@@ -274,16 +230,14 @@ def update_outcomes(polygon_api):
                 if entry_price <= 0:
                     continue
 
-                # Pobierz aktualną cenę
-                current_data = polygon_api.get_ticker_details(ticker)
+                current_data  = polygon_api.get_ticker_details(ticker)
                 current_price = current_data.get('price', 0)
 
                 if current_price <= 0:
                     continue
 
                 change_pct = ((current_price - entry_price) / entry_price) * 100
-
-                updates = {}
+                updates    = {}
 
                 if elapsed_h >= 1 and row['outcome_1h'] is None:
                     updates['outcome_1h']    = round(change_pct, 2)
@@ -304,8 +258,6 @@ def update_outcomes(polygon_api):
                         list(updates.values()) + [row['id']]
                     )
                     updated += 1
-                    logger.info(f"DB outcome: {ticker} (id={row['id']}) "
-                                f"→ {list(updates.keys())}")
 
             except Exception as e:
                 logger.warning(f"Błąd update outcome dla {row['ticker']}: {e}")
@@ -316,7 +268,7 @@ def update_outcomes(polygon_api):
         conn.close()
 
     if updated:
-        logger.info(f"DB: zaktualizowano {updated} wyników sygnałów")
+        logger.info(f"DB: zaktualizowano {updated} wyników")
     return updated
 
 
@@ -348,48 +300,69 @@ def get_active_buy_signals():
         conn.close()
 
 
-def check_retrigger_conditions(signal, current_data):
+def check_retrigger_conditions(signal, uw_data):
     """
-    Sprawdza czy aktualny stan tickera wyzwala re-analizę przez Claude'a.
+    Sprawdza czy dane z UW wyzwalają re-analizę przez Claude'a.
 
-    Triggery:
-    - Wolumen spadł o 30%+ vs moment sygnału
-    - Cena cofnęła się o 3%+
-    - Cena wzrosła o 10%+ (take profit alert)
+    Triggery oparte na UW (nie na Polygon):
+    - Dark pool side zmienił się na SELL
+    - Options flow zmienił się na bearish (call/put ratio < 0.7)
+    - Brak aktywności UW (unusual = False i mały wolumen opcji)
+    - Cena cofnęła się o 3%+ (z UW lub Polygon)
+    - Cena wzrosła o 10%+ (take profit)
 
-    Zwraca: (trigger_name, details) lub (None, None)
+    uw_data — dict z MockUnusualWhales.get_options_flow() +
+              dodatkowe pole 'dark_pool' z get_dark_pool_flow()
     """
-    entry_price       = signal.get('price', 0)
-    entry_volume      = signal.get('volume', 0)
-    current_price     = current_data.get('price', 0)
-    current_volume    = current_data.get('volume', 0)
-    current_vol_ratio = current_data.get('volume_ratio', 1.0)
+    entry_price  = signal.get('price', 0)
+    current_price = uw_data.get('price', entry_price)
 
-    if entry_price <= 0 or current_price <= 0:
+    if entry_price <= 0:
         return None, None
 
     price_change = ((current_price - entry_price) / entry_price) * 100
-    volume_change = ((current_volume - entry_volume) / max(entry_volume, 1)) * 100
 
-    # Trigger 1: Wolumen słabnie
-    if volume_change <= -30 and current_vol_ratio < 1.5:
-        return 'VOLUME_DROP', (
-            f"Wolumen spadł o {volume_change:.1f}% "
-            f"(ratio: {current_vol_ratio:.1f}x)"
+    # Trigger 1: Take profit +10%
+    if price_change >= 10.0:
+        return 'TAKE_PROFIT', (
+            f"Cena wzrosła o {price_change:.1f}% "
+            f"od sygnału (${entry_price:.2f} → ${current_price:.2f})"
         )
 
-    # Trigger 2: Cena się cofa
+    # Trigger 2: Cena cofa się o 3%+
     if price_change <= -3.0:
         return 'PRICE_REVERSAL', (
             f"Cena cofnęła się o {price_change:.1f}% "
             f"od sygnału (${entry_price:.2f} → ${current_price:.2f})"
         )
 
-    # Trigger 3: Take profit
-    if price_change >= 10.0:
-        return 'TAKE_PROFIT', (
-            f"Cena wzrosła o {price_change:.1f}% "
-            f"od sygnału (${entry_price:.2f} → ${current_price:.2f})"
+    # Trigger 3: Dark pool zmienił się na SELL
+    dark_pool_side = uw_data.get('dark_pool_side', '')
+    if dark_pool_side == 'SELL':
+        dark_pool_size = uw_data.get('dark_pool_size', 0)
+        return 'DARKPOOL_SELL', (
+            f"Dark pool zmienił się na SELL "
+            f"(${dark_pool_size:,})"
+        )
+
+    # Trigger 4: Options flow stał się bearish
+    call_put_ratio = uw_data.get('call_put_ratio', 1.0)
+    if call_put_ratio < 0.7:
+        return 'OPTIONS_BEARISH', (
+            f"Options flow bearish — "
+            f"call/put ratio: {call_put_ratio:.2f}"
+        )
+
+    # Trigger 5: UW aktywność zniknęła (unusual = False i mały wolumen)
+    unusual      = uw_data.get('unusual', False)
+    call_volume  = uw_data.get('call_volume', 0)
+    put_volume   = uw_data.get('put_volume', 0)
+    total_volume = call_volume + put_volume
+
+    if not unusual and total_volume < 1000:
+        return 'UW_ACTIVITY_GONE', (
+            f"UW aktywność zniknęła — "
+            f"unusual: {unusual}, opcje: {total_volume}"
         )
 
     return None, None
@@ -469,9 +442,9 @@ def get_stats():
         active_monitoring = c.fetchone()[0]
 
         return {
-            'total_signals':    total,
-            'by_verdict':       by_verdict,
-            'avg_outcomes_buy': avg_outcomes,
+            'total_signals':     total,
+            'by_verdict':        by_verdict,
+            'avg_outcomes_buy':  avg_outcomes,
             'active_monitoring': active_monitoring,
         }
 
@@ -487,14 +460,12 @@ if __name__ == "__main__":
     from claude_analyst import ClaudeAnalyst
 
     print("\n" + "="*50)
-    print("  TEST: Baza danych SQLite")
+    print("  TEST: Baza danych SQLite v2 (UW monitoring)")
     print("="*50)
 
-    # Inicjalizacja
     init_db()
     print("✅ Baza danych zainicjowana")
 
-    # Pobierz dane i wyłoń TOP 5
     polygon = MockPolygon()
     uw      = MockUnusualWhales()
     fh      = MockFinnhub()
@@ -504,7 +475,7 @@ if __name__ == "__main__":
 
     finnhub_cache = {}
     for t in universe:
-        ticker = t['ticker']
+        ticker        = t['ticker']
         t['earnings'] = fh.get_earnings_calendar(ticker)
         t['insider']  = fh.get_insider_transactions(ticker)
         finnhub_cache[ticker] = {
@@ -519,11 +490,9 @@ if __name__ == "__main__":
         top_n=5
     )
 
-    # Analiza przez Claude
     analyst = ClaudeAnalyst()
     results = analyst.analyze_batch(top5, polygon_api=polygon, uw_api=uw)
 
-    # Zapisz sygnały do bazy
     print("\n✅ Zapisywanie sygnałów:")
     for result, ticker_data in zip(results, top5):
         signal_id = save_signal(result, ticker_data)
@@ -533,46 +502,40 @@ if __name__ == "__main__":
         print(f"  {icon} {result['ticker']} — {result['verdict']} "
               f"(id={signal_id})")
 
-    # Test historii sygnałów
-    print("\n✅ Historia sygnałów (przykład):")
-    ticker_example = top5[0]['ticker']
-    history = get_signal_history(ticker_example, limit=5)
-    for h in history:
-        print(f"  {h['date']}: {h['verdict']} @ ${h['price']:.2f}")
-
-    # Test monitorowania
     print("\n✅ Aktywne BUY do monitorowania:")
     active = get_active_buy_signals()
     if active:
         for sig in active:
             print(f"  {sig['ticker']} — BUY @ ${sig['price']:.2f}")
 
-        # Symuluj trigger
-        print("\n✅ Test triggerów re-analizy:")
+        print("\n✅ Test triggerów UW:")
         for sig in active[:2]:
-            # Symuluj spadek ceny o 5%
-            fake_current = {
-                'price':        sig['price'] * 0.95,
-                'volume':       int(sig['volume'] * 0.60),
-                'volume_ratio': 0.8,
+            # Symuluj bearish UW data
+            fake_uw = {
+                'price':          sig['price'] * 0.96,  # cena -4%
+                'call_volume':    200,
+                'put_volume':     800,
+                'call_put_ratio': 0.25,   # bardzo bearish
+                'unusual':        False,
+                'dark_pool_side': 'SELL',
+                'dark_pool_size': 750_000,
             }
-            trigger, details = check_retrigger_conditions(sig, fake_current)
+            trigger, details = check_retrigger_conditions(sig, fake_uw)
             if trigger:
-                print(f"  ⚡ {sig['ticker']}: trigger [{trigger}] — {details}")
+                print(f"  ⚡ {sig['ticker']}: [{trigger}] — {details}")
                 save_retrigger(sig['id'], sig['ticker'], trigger,
                                details, 'BUY')
             else:
                 print(f"  ✓ {sig['ticker']}: brak triggera")
     else:
-        print("  Brak aktywnych BUY w tej chwili (losowe dane)")
+        print("  Brak aktywnych BUY (losowe dane)")
 
-    # Statystyki
-    print("\n✅ Statystyki bazy:")
+    print("\n✅ Statystyki:")
     stats = get_stats()
-    print(f"  Łącznie sygnałów: {stats['total_signals']}")
+    print(f"  Sygnałów: {stats['total_signals']}")
     print(f"  Werdykty: {stats['by_verdict']}")
-    print(f"  Aktywne monitorowanie: {stats['active_monitoring']}")
+    print(f"  Monitoring: {stats['active_monitoring']}")
 
     print("\n" + "="*50)
-    print("  Plik 5 gotowy ✅")
+    print("  Plik 5 v2 gotowy ✅")
     print("="*50)
