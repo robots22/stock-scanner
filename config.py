@@ -38,6 +38,18 @@ FINNHUB_API_KEY      = os.getenv('FINNHUB_API_KEY', '')
 ANTHROPIC_API_KEY    = os.getenv('ANTHROPIC_API_KEY', '')
 TELEGRAM_BOT_TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID     = os.getenv('TELEGRAM_CHAT_ID', '')
+TELEGRAM_CHAT_ID_2   = os.getenv('TELEGRAM_CHAT_ID_2', '')
+TELEGRAM_CHAT_ID_3   = os.getenv('TELEGRAM_CHAT_ID_3', '')
+
+# Lista wszystkich aktywnych Chat ID — dynamiczna, obsługuje 1-3 odbiorców
+TELEGRAM_CHAT_IDS = [
+    cid for cid in [
+        TELEGRAM_CHAT_ID,
+        TELEGRAM_CHAT_ID_2,
+        TELEGRAM_CHAT_ID_3,
+    ]
+    if cid
+]
 
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)

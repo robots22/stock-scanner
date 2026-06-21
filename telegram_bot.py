@@ -20,7 +20,7 @@ import requests
 import threading
 import time
 from config import (logger, CONFIG, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-                    now_chicago, get_market_status)
+                    TELEGRAM_CHAT_IDS, now_chicago, get_market_status)
 
 
 # ==================== KONFIGURACJA ====================
@@ -32,24 +32,25 @@ POLL_INTERVAL = 2  # sekundy między sprawdzaniem nowych wiadomości
 # ==================== WYSYŁANIE ====================
 
 def send(text, parse_mode='HTML'):
-    """Wysyła wiadomość na Telegram"""
+    """Wysyła wiadomość na wszystkie skonfigurowane Chat ID"""
     if not CONFIG['telegram_enabled']:
         print(f"\n📱 TELEGRAM BOT: {text[:100]}")
         return True
-    try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            data={
-                'chat_id':    TELEGRAM_CHAT_ID,
-                'text':       text[:4096],
-                'parse_mode': parse_mode,
-            },
-            timeout=10,
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Telegram bot send error: {e}")
-        return False
+
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            requests.post(
+                f"{TELEGRAM_API}/sendMessage",
+                data={
+                    'chat_id':    chat_id,
+                    'text':       text[:4096],
+                    'parse_mode': parse_mode,
+                },
+                timeout=10,
+            )
+        except Exception as e:
+            logger.error(f"Telegram bot send error {chat_id}: {e}")
+    return True
 
 
 # ==================== KOMENDY ====================
@@ -250,8 +251,9 @@ class TelegramBot:
             return
 
         # Sprawdź czy wiadomość pochodzi od autoryzowanego użytkownika
-        chat_id = str(message.get('chat', {}).get('id', ''))
-        if chat_id != str(TELEGRAM_CHAT_ID):
+        chat_id      = str(message.get('chat', {}).get('id', ''))
+        allowed_ids  = [str(cid) for cid in TELEGRAM_CHAT_IDS]
+        if chat_id not in allowed_ids:
             logger.warning(f"TelegramBot: nieautoryzowany chat_id: {chat_id}")
             return
 

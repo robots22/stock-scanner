@@ -11,14 +11,15 @@ Zadanie:
 """
 
 import requests
-from config import logger, CONFIG, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, now_chicago
+from config import (logger, CONFIG, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+                    TELEGRAM_CHAT_IDS, now_chicago)
 
 
 # ==================== WYSYŁANIE WIADOMOŚCI ====================
 
 def send_message(text, parse_mode='HTML'):
     """
-    Wysyła wiadomość na Telegram.
+    Wysyła wiadomość na wszystkie skonfigurowane Chat ID.
     W trybie DEMO (brak tokena) drukuje do konsoli.
     """
     if not CONFIG['telegram_enabled']:
@@ -29,29 +30,31 @@ def send_message(text, parse_mode='HTML'):
         print("─"*50)
         return True
 
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        response = requests.post(
-            url,
-            data={
-                'chat_id':    TELEGRAM_CHAT_ID,
-                'text':       text[:4096],  # Telegram limit
-                'parse_mode': parse_mode,
-            },
-            timeout=10
-        )
+    url     = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    success = False
 
-        if response.status_code == 200:
-            logger.info("Telegram: wiadomość wysłana")
-            return True
-        else:
-            logger.error(f"Telegram błąd: {response.status_code} — "
-                         f"{response.text[:100]}")
-            return False
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            response = requests.post(
+                url,
+                data={
+                    'chat_id':    chat_id,
+                    'text':       text[:4096],
+                    'parse_mode': parse_mode,
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                success = True
+            else:
+                logger.error(f"Telegram błąd {chat_id}: "
+                             f"{response.status_code}")
+        except Exception as e:
+            logger.error(f"Telegram wyjątek {chat_id}: {e}")
 
-    except Exception as e:
-        logger.error(f"Telegram wyjątek: {e}")
-        return False
+    if success:
+        logger.info(f"Telegram: wysłano na {len(TELEGRAM_CHAT_IDS)} chat(y)")
+    return success
 
 
 # ==================== ALERTY SYGNAŁÓW ====================
