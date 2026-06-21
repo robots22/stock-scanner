@@ -9,6 +9,8 @@ Historia zmian:
            - daily_budget_usd z config.py (~$1.14/dzien = $25/miesiac)
            - reset licznika o polnocy
            - przy przekroczeniu limitu zwraca WATCH zamiast wywolywac API
+    v1.2 — fix ZeroDivisionError przy vwap=0 (weekend/brak danych)
+           - vwap_position obliczany bezpiecznie z fallback na BRAK DANYCH
 
 Zadanie: analizuje TOP 5 tickerów i wydaje werdykt
 BUY / WATCH / AVOID + uzasadnienie.
@@ -63,7 +65,7 @@ Wolumen:       {volume:,}
 Volume ratio:  {ratio:.1f}x średniej 30-dniowej
 High/Low:      ${high:.2f} / ${low:.2f}
 VWAP:          ${vwap:.2f}
-Pozycja vs VWAP: {'POWYŻEJ' if price > vwap else 'PONIŻEJ'} ({((price-vwap)/vwap*100):+.1f}%)
+Pozycja vs VWAP: {('POWYŻEJ' if price > vwap else 'PONIŻEJ') + (f' ({((price-vwap)/vwap*100):+.1f}%)' if vwap > 0 else ' (BRAK DANYCH)')}
 
 === DLACZEGO TEN TICKER (pre-filter) ===
 """
