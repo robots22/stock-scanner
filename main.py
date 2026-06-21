@@ -27,6 +27,9 @@ Historia zmian:
     v1.5 — podłączono prawdziwy FinnhubAPI (DEMO_MODE = False)
            - wszystkie trzy źródła danych są teraz prawdziwe
            - Polygon + UW + Finnhub: pełny LIVE mode bez Mock
+    v1.6 — dodano AlpacaAPI jako backup danych rynkowych
+           - get_ticker_with_fallback(): Polygon → Alpaca automatycznie
+           - self.alpaca = None w trybie DEMO
 """
 
 import time
@@ -41,6 +44,7 @@ from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
 from polygon_api import PolygonAPI
 from finnhub_api import FinnhubAPI
+from alpaca_api import AlpacaAPI, get_ticker_with_fallback
 from pre_filter import get_top_tickers, uw_fast_track
 from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
@@ -75,7 +79,14 @@ class StockScanner:
             self.polygon = PolygonAPI()        # ← prawdziwy Polygon
             self.uw      = UnusualWhalesAPI()  # ← prawdziwy UW
             self.fh      = FinnhubAPI()        # ← prawdziwy Finnhub
-            logger.info("Tryb LIVE — Polygon: prawdziwy, UW: prawdziwy, Finnhub: prawdziwy")
+            self.alpaca  = AlpacaAPI()         # ← backup danych
+            logger.info("Tryb LIVE — Polygon + UW + Finnhub + Alpaca backup")
+
+        # Alpaca (tylko w trybie LIVE)
+        if not self.demo_mode:
+            pass  # już zainicjowany wyżej
+        else:
+            self.alpaca = None
 
         # Claude analityk
         self.analyst = ClaudeAnalyst()
@@ -245,8 +256,13 @@ class StockScanner:
                      if dp.get('ticker') == ticker), {}
                 )
 
-                # Pobierz cenę z Polygon (tylko dla price triggers)
-                current_data = self.polygon.get_ticker_details(ticker)
+                # Pobierz cenę z Polygon (z fallback na Alpaca)
+                if self.alpaca:
+                    current_data = get_ticker_with_fallback(
+                        ticker, self.polygon, self.alpaca
+                    )
+                else:
+                    current_data = self.polygon.get_ticker_details(ticker)
 
                 # Złącz dane UW z ceną
                 uw_data = {
