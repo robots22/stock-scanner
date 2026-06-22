@@ -317,8 +317,8 @@ class PolygonAPI:
                 'bankruptcy', 'dilution', 'offering'
             ]
 
-            bull_score = sum(1 for w in bullish_words if w in text)
-            bear_score = sum(1 for w in bearish_words if w in text)
+            bull_score = sum(1 for w in bullish_words if f' {w} ' in f' {text} ')
+            bear_score = sum(1 for w in bearish_words if f' {w} ' in f' {text} ')
 
             if bull_score > bear_score:
                 sentiment = 'bullish'

@@ -26,6 +26,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from config import (
+    CLAUDE_CONFIG,
     logger, CONFIG, now_chicago,
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 )
@@ -273,7 +274,7 @@ def cmd_cost():
     """Koszt Claude API dziś i w tym tygodniu."""
     daily  = system_state.get('daily_cost',  0.0)
     weekly = system_state.get('weekly_cost', 0.0)
-    budget_daily = CONFIG.get('claude_daily_budget', 1.14)
+    budget_daily = CLAUDE_CONFIG.get('daily_budget_usd', 1.14)
 
     used_pct = round(daily / budget_daily * 100, 1) if budget_daily else 0
     remaining = max(0.0, budget_daily - daily)

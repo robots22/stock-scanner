@@ -80,7 +80,7 @@ class FinnhubAPI:
         Wykonuje GET request do Finnhub API z cache i rate limiting.
         """
         params = params or {}
-        params['token'] = FINNHUB_API_KEY
+        # klucz w headerze X-Finnhub-Token — nie duplikuj w params
 
         cache_key = f"{endpoint}:{str(sorted(params.items()))}"
         cached    = self._cache_get(cache_key)
