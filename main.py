@@ -35,6 +35,11 @@ Historia zmian:
            - after-market: 15:00-20:00 CST, co 15 min, vol > 10k
            - Claude tylko dla tickerów z katalizatorem w extended hours
            - manual_queue: kolejka manualnych analiz z Telegram /analyze
+    v1.8 — integracja z telegram_bot v2.0
+           - zastąpiono klasę TelegramBot funkcjami z telegram_bot.py
+           - system_state synchronizowany po każdym cyklu głównym
+           - /pause i /resume obsługiwane przez tb.system_paused
+           - kolejki manualne zsynchronizowane (self + tb.manual_queue)
 """
 
 import time
@@ -60,7 +65,8 @@ from database import (init_db, save_signal, get_signal_history,
 from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message)
-from telegram_bot import TelegramBot
+import telegram_bot as tb
+from telegram_bot import start_bot_thread
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -82,17 +88,14 @@ class StockScanner:
             self.fh      = MockFinnhub()
             logger.info("Tryb DEMO — używam Mock API")
         else:
-            # Etap 2 — wszystkie prawdziwe API
-            self.polygon = PolygonAPI()        # ← prawdziwy Polygon
-            self.uw      = UnusualWhalesAPI()  # ← prawdziwy UW
-            self.fh      = FinnhubAPI()        # ← prawdziwy Finnhub
-            self.alpaca  = AlpacaAPI()         # ← backup danych
+            self.polygon = PolygonAPI()
+            self.uw      = UnusualWhalesAPI()
+            self.fh      = FinnhubAPI()
+            self.alpaca  = AlpacaAPI()
             logger.info("Tryb LIVE — Polygon + UW + Finnhub + Alpaca backup")
 
         # Alpaca (tylko w trybie LIVE)
-        if not self.demo_mode:
-            pass  # już zainicjowany wyżej
-        else:
+        if self.demo_mode:
             self.alpaca = None
 
         # Claude analityk
@@ -117,13 +120,13 @@ class StockScanner:
         # Extended hours
         self.last_extended_scan = None
 
-        # Kolejka manualnych analiz (z Telegram /analyze TICKER)
-        self.manual_queue       = []
-        self.manual_cost_usd    = 0.0
-        self._manual_lock       = threading.Lock()
+        # Kolejka manualnych analiz (lokalna — bot ma swoją w tb.manual_queue)
+        self.manual_queue    = []
+        self.manual_cost_usd = 0.0
+        self._manual_lock    = threading.Lock()
 
-        # Telegram bot (nasłuchuje komend)
-        self.bot = TelegramBot(self)
+        # Inicjalizacja system_state dla telegram_bot
+        tb.system_state['start_time'] = time.time()
 
         # Sygnał Ctrl+C
         signal.signal(signal.SIGINT,  self._shutdown_handler)
@@ -153,7 +156,7 @@ class StockScanner:
         # 3. Pobierz dane Finnhub dla universe
         finnhub_cache = {}
         for t in universe:
-            ticker = t['ticker']
+            ticker   = t['ticker']
             earnings = self.fh.get_earnings_calendar(ticker)
             insider  = self.fh.get_insider_transactions(ticker)
             t['earnings'] = earnings
@@ -189,14 +192,20 @@ class StockScanner:
 
         # 6. Zapisz sygnały i wyślij alerty
         for result, ticker_data in zip(results, top5):
-            signal_id = save_signal(result, ticker_data)
+            save_signal(result, ticker_data)
             self._send_alert(result, ticker_data)
 
         # 7. Zaktualizuj automatyczne wyniki
         update_outcomes(self.polygon)
 
-        self.scan_count         += 1
-        self.last_main_scan      = now_chicago()
+        self.scan_count     += 1
+        self.last_main_scan  = now_chicago()
+
+        # 8. Synchronizuj system_state z telegram_bot
+        tb.system_state['scan_count'] = self.scan_count
+        tb.system_state['last_scan']  = now_chicago().strftime('%H:%M:%S')
+        tb.system_state['daily_cost'] = self.analyst.daily_cost_usd
+        tb.system_state['weekly_cost'] = self.analyst.total_cost_usd
 
         logger.info(f"Cykl główny zakończony — "
                     f"przeanalizowano {len(results)} tickerów")
@@ -221,13 +230,11 @@ class StockScanner:
             logger.info(f"UW Fast Track: {len(fast_track)} nowych tickerów")
             for ft in fast_track:
                 logger.info(f"  ⚡ {ft['ticker']}: {ft['reason']}")
-                # Fast track ticker trafia natychmiast do Claude
-                # Pobierz dane dla tickera
                 ticker_data = self.polygon.get_ticker_details(ft['ticker'])
                 if ticker_data:
                     ticker_data['ticker']  = ft['ticker']
                     ticker_data['reasons'] = [ft['reason']]
-                    ticker_data['score']   = 60  # UW fast track = wysoki priorytet
+                    ticker_data['score']   = 60
 
                     result = self.analyst.analyze(
                         ticker_data,
@@ -258,15 +265,14 @@ class StockScanner:
             ticker = sig['ticker']
 
             try:
-                # Cooldown — nie re-analizuj tego samego tickera
-                # częściej niż co 5 minut
+                # Cooldown — nie re-analizuj częściej niż co 5 minut
                 last_trigger = self.trigger_cooldown.get(ticker)
                 if last_trigger:
                     elapsed = (now_chicago() - last_trigger).total_seconds()
                     if elapsed < 300:
                         continue
 
-                # Pobierz dane UW dla tickera (główne źródło monitoringu)
+                # Pobierz dane UW
                 options_flow   = self.uw.get_options_flow(ticker)
                 dark_pool_flow = self.uw.get_dark_pool_flow()
                 dp_for_ticker  = next(
@@ -290,10 +296,8 @@ class StockScanner:
                     'dark_pool_size': dp_for_ticker.get('size_usd', 0),
                 }
 
-                # Sprawdź triggery oparte na UW
-                trigger, details = check_retrigger_conditions(
-                    sig, uw_data
-                )
+                # Sprawdź triggery
+                trigger, details = check_retrigger_conditions(sig, uw_data)
 
                 if not trigger:
                     continue
@@ -303,7 +307,7 @@ class StockScanner:
 
                 current_price = uw_data.get('price', sig['price'])
 
-                # Take profit — alert bez re-analizy Claude'a
+                # Take profit — alert bez re-analizy
                 if trigger == 'TAKE_PROFIT':
                     gain = ((current_price - sig['price'])
                             / sig['price'] * 100)
@@ -334,7 +338,6 @@ class StockScanner:
 
                 new_verdict = new_result.get('verdict', 'WATCH')
 
-                # Zapisz trigger i wyślij alert
                 save_retrigger(sig['id'], ticker, trigger, details,
                                'BUY', new_verdict)
 
@@ -348,7 +351,6 @@ class StockScanner:
                     entry_price=sig['price'],
                 )
 
-                # Zamknij monitorowanie jeśli zmienił się na AVOID
                 if new_verdict == 'AVOID':
                     close_signal(sig['id'], f"RE-ANALIZA → {new_verdict}")
 
@@ -358,14 +360,11 @@ class StockScanner:
     # ==================== ALERTY ====================
 
     def _send_alert(self, result, ticker_data):
-        """
-        Wysyła alert z cooldown — zapobiega duplikatom.
-        """
+        """Wysyła alert z cooldown — zapobiega duplikatom."""
         ticker  = result.get('ticker', '')
         verdict = result.get('verdict', '')
         key     = f"{ticker}_{verdict}"
 
-        # Sprawdź cooldown
         last_alert = self.alert_cooldown.get(key)
         if last_alert:
             elapsed = (now_chicago() - last_alert).total_seconds()
@@ -382,11 +381,10 @@ class StockScanner:
     # ==================== DASHBOARD ====================
 
     def run_dashboard(self):
-        """Wysyła godzinne podsumowanie na Telegram"""
+        """Wysyła godzinne podsumowanie na Telegram."""
         stats          = get_stats()
         active_signals = get_active_buy_signals()
 
-        # Top sygnały z ostatniej godziny
         top_today = []
         from database import get_connection
         conn = get_connection()
@@ -411,10 +409,7 @@ class StockScanner:
     # ==================== INTERFEJS DLA BAZY ====================
 
     def get_signal_history(self, ticker, limit=5):
-        """
-        Wrapper dla claude_analyst.analyze_batch() —
-        dostarcza historię sygnałów z bazy.
-        """
+        """Wrapper dla claude_analyst — dostarcza historię sygnałów z bazy."""
         return get_signal_history(ticker, limit)
 
     # ==================== EXTENDED HOURS ====================
@@ -422,19 +417,16 @@ class StockScanner:
     def run_extended_scan(self):
         """
         Skan pre-market lub after-market — co 15 minut.
-        Claude analizuje tylko tickery z katalizatorem (earnings, FDA, insider).
-        Wolumen minimalny: 10,000 (zamiast 100,000 podczas sesji).
+        Claude analizuje tylko tickery z katalizatorem.
         """
         status = get_market_status()
         logger.info(f"=== CYKL EXTENDED HOURS ({status}) ===")
 
-        # Pobierz universe z niższym progiem wolumenu
         universe = self.polygon.get_universe()
         if not universe:
             logger.info("Extended hours: brak danych z Polygon")
             return
 
-        # Filtruj po niższym wolumenie dla extended hours
         min_vol  = CONFIG['min_volume_extended']
         filtered = [t for t in universe
                     if t.get('volume', 0) >= min_vol]
@@ -443,10 +435,9 @@ class StockScanner:
             logger.info(f"Extended hours: brak tickerów z vol >= {min_vol:,}")
             return
 
-        # Pobierz dane Finnhub
         finnhub_cache = {}
         for t in filtered:
-            ticker       = t['ticker']
+            ticker        = t['ticker']
             t['earnings'] = self.fh.get_earnings_calendar(ticker)
             t['insider']  = self.fh.get_insider_transactions(ticker)
             if t['earnings'] or t['insider']:
@@ -455,7 +446,6 @@ class StockScanner:
                     'insider':  t['insider'],
                 }
 
-        # Tylko tickery z katalizatorem (jeśli tryb oszczędny)
         if not CONFIG['claude_extended_hours_all']:
             with_catalyst = [t for t in filtered
                              if t.get('earnings') or t.get('insider')]
@@ -466,7 +456,6 @@ class StockScanner:
                 return
             filtered = with_catalyst
 
-        # Pre-filter → TOP 5
         dark_pool = self.uw.get_dark_pool_flow()
         top5 = get_top_tickers(
             filtered,
@@ -478,7 +467,6 @@ class StockScanner:
         if not top5:
             return
 
-        # Analiza Claude
         results = self.analyst.analyze_batch(
             top5,
             polygon_api=self.polygon,
@@ -497,10 +485,7 @@ class StockScanner:
     # ==================== MANUALNA ANALIZA ====================
 
     def queue_manual_analysis(self, ticker):
-        """
-        Dodaje ticker do kolejki manualnej analizy.
-        Wywoływane przez Telegram bot po komendzie /analyze TICKER.
-        """
+        """Dodaje ticker do kolejki manualnej analizy."""
         ticker = ticker.upper().strip()
         with self._manual_lock:
             if ticker not in self.manual_queue:
@@ -512,10 +497,14 @@ class StockScanner:
     def run_manual_analysis(self):
         """
         Przetwarza kolejkę manualnych analiz.
-        Wywołuje Claude dla każdego tickera z kolejki.
+        Łączy kolejkę lokalną z kolejką telegram_bot.
         """
         with self._manual_lock:
-            queue = self.manual_queue.copy()
+            # Pobierz też tickery z kolejki bota Telegram
+            with tb.manual_queue_lock:
+                bot_queue = tb.manual_queue.copy()
+                tb.manual_queue.clear()
+            queue = self.manual_queue.copy() + bot_queue
             self.manual_queue.clear()
 
         if not queue:
@@ -528,10 +517,15 @@ class StockScanner:
             return
 
         for ticker in queue:
+            # Sprawdź blacklistę sesji z bota
+            with tb.session_blacklist_lock:
+                if ticker in tb.session_blacklist:
+                    logger.info(f"Manualna analiza: {ticker} na blackliście")
+                    continue
+
             try:
                 logger.info(f"Manualna analiza: {ticker}")
 
-                # Pobierz dane
                 ticker_data = self.polygon.get_ticker_details(ticker)
                 if not ticker_data or ticker_data.get('price', 0) <= 0:
                     if self.alpaca:
@@ -541,9 +535,9 @@ class StockScanner:
                     logger.warning(f"Manualna analiza: brak danych dla {ticker}")
                     continue
 
-                ticker_data['ticker']  = ticker
-                ticker_data['score']   = 50
-                ticker_data['reasons'] = ['Manualna analiza (żądanie użytkownika)']
+                ticker_data['ticker']   = ticker
+                ticker_data['score']    = 50
+                ticker_data['reasons']  = ['Manualna analiza (żądanie użytkownika)']
                 ticker_data['earnings'] = self.fh.get_earnings_calendar(ticker)
                 ticker_data['insider']  = self.fh.get_insider_transactions(ticker)
 
@@ -554,7 +548,6 @@ class StockScanner:
                     signal_history=get_signal_history(ticker),
                 )
 
-                # Śledź koszt manualnych analiz osobno
                 cost = CONFIG.get('cost_per_call_usd', 0.0028)
                 self.manual_cost_usd += cost
 
@@ -570,12 +563,12 @@ class StockScanner:
     # ==================== GŁÓWNA PĘTLA ====================
 
     def run(self):
-        """Uruchamia system — główna pętla"""
+        """Uruchamia system — główna pętla."""
         self.running = True
 
         print(f"""
 {'='*55}
-  {' STOCK SCANNER v1.0 ':=^53}
+  {' STOCK SCANNER v1.8 ':=^53}
   Tryb:    {'DEMO (MockPolygon)' if self.demo_mode else 'LIVE'}
   Rynek:   {get_market_status()}
   Czas:    {now_chicago().strftime('%Y-%m-%d %H:%M:%S')} CST
@@ -584,14 +577,11 @@ class StockScanner:
 {'='*55}
 """)
 
-        # Inicjalizacja bazy
         init_db()
-
-        # Startup alert
         send_startup_message(demo_mode=self.demo_mode)
 
         # Uruchom Telegram bot w osobnym wątku
-        self.bot.start()
+        start_bot_thread()
 
         logger.info("System uruchomiony — Ctrl+C aby zatrzymać")
 
@@ -604,6 +594,11 @@ class StockScanner:
         # Główna pętla
         while self.running:
             try:
+                # Obsługa /pause z Telegram bota
+                if tb.system_paused:
+                    time.sleep(5)
+                    continue
+
                 now = now_chicago()
 
                 # Cykl UW (co 1 minutę)
@@ -629,7 +624,10 @@ class StockScanner:
                         logger.error(f"Błąd cyklu głównego: {e}")
 
                 # Extended hours (pre/after-market) — co 15 minut
-                in_extended = (CONFIG['premarket_enabled'] and is_premarket()) or                               (CONFIG['aftermarket_enabled'] and is_aftermarket())
+                in_extended = (
+                    (CONFIG['premarket_enabled']  and is_premarket()) or
+                    (CONFIG['aftermarket_enabled'] and is_aftermarket())
+                )
 
                 if in_extended:
                     ext_interval = (CONFIG['premarket_scan_interval']
@@ -644,8 +642,8 @@ class StockScanner:
                         except Exception as e:
                             logger.error(f"Błąd extended hours: {e}")
 
-                # Manualna analiza z kolejki
-                if self.manual_queue:
+                # Manualna analiza z kolejki (lokalna + bot)
+                if self.manual_queue or tb.manual_queue:
                     try:
                         self.run_manual_analysis()
                     except Exception as e:
@@ -662,7 +660,7 @@ class StockScanner:
                     except Exception as e:
                         logger.error(f"Błąd dashboardu: {e}")
 
-                # Status w konsoli co 1 minutę
+                # Status w konsoli
                 self._print_status()
 
                 # Śpij 30 sekund
@@ -673,40 +671,41 @@ class StockScanner:
                 time.sleep(30)
 
     def _print_status(self):
-        """Drukuje krótki status do konsoli"""
+        """Drukuje krótki status do konsoli."""
         stats = get_stats()
         now   = now_chicago()
+        pause = " ⏸PAUSE" if tb.system_paused else ""
         print(f"\r⏱ {now.strftime('%H:%M:%S')} CST | "
-              f"Rynek: {get_market_status()} | "
+              f"Rynek: {get_market_status()}{pause} | "
               f"Skanów: {self.scan_count} | "
               f"Sygnałów: {stats.get('total_signals', 0)} | "
               f"Alertów: {self.alert_count} | "
-              f"Monit.: {stats.get('active_monitoring', 0)}",
+              f"Koszt: ${self.analyst.daily_cost_usd:.4f}",
               end='', flush=True)
 
     # ==================== SHUTDOWN ====================
 
     def _shutdown_handler(self, sig, frame):
-        """Obsługuje Ctrl+C i SIGTERM"""
+        """Obsługuje Ctrl+C i SIGTERM."""
         print("\n")
         logger.info("Sygnał zatrzymania otrzymany...")
         self.shutdown()
 
     def shutdown(self):
-        """Czyste zatrzymanie systemu"""
+        """Czyste zatrzymanie systemu."""
         self.running = False
         print("\n" + "="*55)
         print("  ZATRZYMYWANIE SYSTEMU...")
         print("="*55)
 
-        # Zatrzymaj Telegram bot
-        if hasattr(self, 'bot'):
-            self.bot.stop()
+        # Bot jest daemon thread — zatrzymuje się automatycznie
+        # gdy główny wątek kończy pracę
 
-        stats = get_stats()
+        stats         = get_stats()
+        analyst_stats = self.analyst.get_stats()
+
         send_shutdown_message(stats)
 
-        analyst_stats = self.analyst.get_stats()
         print(f"\n📊 Podsumowanie sesji:")
         print(f"  Skanów:      {self.scan_count}")
         print(f"  Alertów:     {self.alert_count}")
