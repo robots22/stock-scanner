@@ -41,12 +41,15 @@ TELEGRAM_CHAT_ID     = os.getenv('TELEGRAM_CHAT_ID', '')
 TELEGRAM_CHAT_ID_2   = os.getenv('TELEGRAM_CHAT_ID_2', '')
 TELEGRAM_CHAT_ID_3   = os.getenv('TELEGRAM_CHAT_ID_3', '')
 
-# Lista wszystkich aktywnych Chat ID — dynamiczna, obsługuje 1-3 odbiorców
+TELEGRAM_CHAT_ID_4   = os.getenv('TELEGRAM_CHAT_ID_4', '')
+
+# Lista wszystkich aktywnych Chat ID — dynamiczna, obsługuje 1-4 odbiorców
 TELEGRAM_CHAT_IDS = [
     cid for cid in [
         TELEGRAM_CHAT_ID,
         TELEGRAM_CHAT_ID_2,
         TELEGRAM_CHAT_ID_3,
+        TELEGRAM_CHAT_ID_4,
     ]
     if cid
 ]
