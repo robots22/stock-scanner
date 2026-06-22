@@ -66,7 +66,7 @@ TELEGRAM_ADMIN_IDS = [
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
-DEMO_MODE = False
+DEMO_MODE = True
 
 SYSTEM_NAME    = "STOCK SCANNER"
 SYSTEM_VERSION = "1.0"
@@ -150,6 +150,7 @@ CLAUDE_CONFIG = {
     # Osobny budżet dla manualnej analizy (Telegram /analyze)
     # Nie wlicza się w dzienny limit automatycznych skanów
     'manual_analysis_budget_usd': 2.00,        # $2/miesiąc osobno
+    'manual_analysis_daily_usd':  2.00 / 22,   # ~$0.09/dzień
 
     # System prompt dla Claude — analityk giełdowy
     'system_prompt': """Jesteś doświadczonym analitykiem giełdowym specjalizującym się 

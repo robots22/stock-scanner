@@ -557,7 +557,8 @@ class StockScanner:
         if not queue:
             return
 
-        budget = CONFIG['manual_analysis_budget_usd'] / 22
+        budget = CONFIG.get('manual_analysis_daily_usd', 
+                             CONFIG.get('manual_analysis_budget_usd', 2.00) / 22)
         if self.manual_cost_usd >= budget:
             logger.warning(f"Manual analysis: dzienny limit ${budget:.2f} "
                            f"przekroczony")
