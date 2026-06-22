@@ -91,7 +91,7 @@ def is_admin(chat_id):
 
 # Komendy dostępne tylko dla adminów
 ADMIN_COMMANDS = {
-    '/pause', '/resume', '/blacklist', '/remind', '/analyze'
+    '/pause', '/resume', '/blacklist', '/remind', '/analyze', '/broadcast'
 }
 
 
@@ -131,6 +131,7 @@ def cmd_help(is_admin_user=False):
             "  /resume         — wznów skanowanie\n"
             "  /blacklist TICK — pomiń ticker (do restartu)\n"
             "  /remind 7d Tekst — ustaw reminder\n"
+            "  /broadcast Tekst — wyślij do wszystkich użytkowników\n"
         )
     else:
         msg += "\n🔒 Komendy admin dostępne dla administratorów."
@@ -589,6 +590,19 @@ def cmd_analyze(ticker):
             return f"⏳ <b>{ticker}</b> już jest w kolejce."
 
 
+def cmd_broadcast(text, sender_chat_id):
+    """Wysyła wiadomość od admina do wszystkich pozostałych użytkowników."""
+    if not text:
+        return "❌ Użycie: /broadcast Treść wiadomości"
+    message = f"📢 <b>Wiadomość od administratora:</b>\n\n{text}"
+    sent = 0
+    for cid in TELEGRAM_CHAT_IDS:
+        if str(cid) != str(sender_chat_id):
+            send_message(message, chat_id=cid)
+            sent += 1
+    return f"✅ Wysłano do {sent} użytkownik{'ów' if sent != 1 else 'a'}."
+
+
 # ==================== REMINDER CHECKER ====================
 
 def check_reminders():
@@ -710,6 +724,8 @@ def run_bot():
                     reply = cmd_report()
                 elif cmd == '/analyze':
                     reply = cmd_analyze(args)
+                elif cmd == '/broadcast':
+                    reply = cmd_broadcast(args, chat_id)
                 elif cmd == '/start':
                     reply = (
                         "👋 <b>Stock Scanner Bot aktywny!</b>\n"
