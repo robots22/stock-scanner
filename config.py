@@ -66,7 +66,7 @@ TELEGRAM_ADMIN_IDS = [
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
-DEMO_MODE = False
+DEMO_MODE = True
 
 SYSTEM_NAME    = "STOCK SCANNER"
 SYSTEM_VERSION = "1.0"
@@ -105,7 +105,8 @@ CONFIG = {
     'duplicate_alert_cooldown': 600,  # 10 minut między tymi samymi alertami
 
     # Baza danych
-    'db_path': 'scanner.db',
+    'db_path':           'scanner.db',
+    'reminders_db_path': 'reminders.db',  # osobna baza — nigdy nie usuwaj!
 
     # Automatyczny wynik sygnału — sprawdź cenę po:
     'outcome_check_hours': [1, 4, 24],

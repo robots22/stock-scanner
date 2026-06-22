@@ -102,13 +102,24 @@ def is_admin(chat_id):
 
 
 def get_db_connection():
-    """Zwraca połączenie z bazą danych."""
+    """Zwraca połączenie z bazą sygnałów."""
     try:
         conn = sqlite3.connect(CONFIG.get('db_path', 'scanner.db'))
         conn.row_factory = sqlite3.Row
         return conn
     except Exception as e:
         logger.error(f"DB connection error: {e}")
+        return None
+
+
+def get_reminders_db():
+    """Zwraca połączenie z osobną bazą reminderów (nigdy nie usuwaj!)."""
+    try:
+        conn = sqlite3.connect(CONFIG.get('reminders_db_path', 'reminders.db'))
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        logger.error(f"Reminders DB connection error: {e}")
         return None
 
 
@@ -367,7 +378,7 @@ def cmd_remind(args_str):
 
     fire_at = (datetime.now() + timedelta(days=days)).isoformat()
 
-    conn = get_db_connection()
+    conn = get_reminders_db()
     if not conn:
         return "❌ Błąd bazy danych."
     try:
@@ -399,7 +410,7 @@ def cmd_remind(args_str):
 
 
 def cmd_reminders():
-    conn = get_db_connection()
+    conn = get_reminders_db()
     if not conn:
         return "❌ Błąd bazy danych."
     try:
@@ -592,7 +603,7 @@ def cmd_analyze(ticker):
 # ==================== REMINDER CHECKER ====================
 
 def check_reminders():
-    conn = get_db_connection()
+    conn = get_reminders_db()
     if not conn:
         return
     try:
