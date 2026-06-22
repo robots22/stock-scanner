@@ -64,7 +64,7 @@ from database import (init_db, save_signal, get_signal_history,
 from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message)
-from telegram_bot import TelegramBot
+from telegram_bot import start_bot_thread, system_state, manual_queue, manual_queue_lock
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -126,8 +126,8 @@ class StockScanner:
         self.manual_cost_usd    = 0.0
         self._manual_lock       = threading.Lock()
 
-        # Telegram bot (nasłuchuje komend)
-        self.bot = TelegramBot(self)
+        # Telegram bot (nasłuchuje komend) — v2.0 używa start_bot_thread
+        self.bot = None  # inicjowany w run()
 
         # Sygnał Ctrl+C
         signal.signal(signal.SIGINT,  self._shutdown_handler)
@@ -207,6 +207,12 @@ class StockScanner:
 
         self.scan_count         += 1
         self.last_main_scan      = now_chicago()
+
+        # Synchronizuj system_state z telegram_bot v2.0
+        system_state['scan_count'] = self.scan_count
+        system_state['last_scan']  = self.last_main_scan.strftime('%H:%M')
+        system_state['daily_cost'] = self.analyst.daily_cost_usd
+        system_state['weekly_cost'] = self.analyst.total_cost_usd
 
         logger.info(f"Cykl główny zakończony — "
                     f"przeanalizowano {len(results)} tickerów")
@@ -535,9 +541,9 @@ class StockScanner:
         Wywoływane przez Telegram bot po komendzie /analyze TICKER.
         """
         ticker = ticker.upper().strip()
-        with self._manual_lock:
-            if ticker not in self.manual_queue:
-                self.manual_queue.append(ticker)
+        with manual_queue_lock:
+            if ticker not in manual_queue:
+                manual_queue.append(ticker)
                 logger.info(f"Manual queue: dodano {ticker}")
                 return True
         return False
@@ -547,9 +553,9 @@ class StockScanner:
         Przetwarza kolejkę manualnych analiz.
         Wywołuje Claude dla każdego tickera z kolejki.
         """
-        with self._manual_lock:
-            queue = self.manual_queue.copy()
-            self.manual_queue.clear()
+        with manual_queue_lock:
+            queue = manual_queue.copy()
+            manual_queue.clear()
 
         if not queue:
             return
@@ -623,8 +629,8 @@ class StockScanner:
         # Startup alert
         send_startup_message(demo_mode=self.demo_mode)
 
-        # Uruchom Telegram bot w osobnym wątku
-        self.bot.start()
+        # Uruchom Telegram bot v2.0 w osobnym wątku
+        start_bot_thread()
 
         logger.info("System uruchomiony — Ctrl+C aby zatrzymać")
 
@@ -678,7 +684,7 @@ class StockScanner:
                             logger.error(f"Błąd extended hours: {e}")
 
                 # Manualna analiza z kolejki
-                if self.manual_queue:
+                if manual_queue:
                     try:
                         self.run_manual_analysis()
                     except Exception as e:
@@ -732,9 +738,7 @@ class StockScanner:
         print("  ZATRZYMYWANIE SYSTEMU...")
         print("="*55)
 
-        # Zatrzymaj Telegram bot
-        if hasattr(self, 'bot'):
-            self.bot.stop()
+        # Telegram bot v2.0 zatrzymuje się automatycznie (daemon thread)
 
         stats = get_stats()
         send_shutdown_message(stats)
