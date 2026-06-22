@@ -160,31 +160,27 @@ class StockScanner:
         # 2. Pobierz dark pool flow (UW)
         dark_pool_flow = self.uw.get_dark_pool_flow()
 
-        # 3. Pobierz dane Finnhub dla universe
-        finnhub_cache = {}
-        for t in universe:
-            ticker = t['ticker']
-            earnings = self.fh.get_earnings_calendar(ticker)
-            insider  = self.fh.get_insider_transactions(ticker)
-            t['earnings'] = earnings
-            t['insider']  = insider
-            if earnings or insider:
-                finnhub_cache[ticker] = {
-                    'earnings': earnings,
-                    'insider':  insider,
-                }
-
-        # 4. Pre-filter → TOP 5
+        # 3. Pre-filter → TOP 5 (bez Finnhub — za dużo wywołań API)
+        # Finnhub pobieramy tylko dla TOP 5 po pre-filtrze
         top5 = get_top_tickers(
             universe,
             dark_pool_flow=dark_pool_flow,
-            finnhub_cache=finnhub_cache,
             top_n=CONFIG['max_tickers_for_claude'],
         )
 
         if not top5:
             logger.warning("Pre-filter: brak tickerów — pomijam analizę")
             return
+
+        # 4. Pobierz dane Finnhub tylko dla TOP 5
+        for t in top5:
+            ticker = t['ticker']
+            earnings = self.fh.get_earnings_calendar(ticker)
+            insider  = self.fh.get_insider_transactions(ticker)
+            t['earnings'] = earnings
+            t['insider']  = insider
+            t['raw_data']['earnings'] = earnings
+            t['raw_data']['insider']  = insider
 
         with self._lock:
             self.current_top5 = top5
