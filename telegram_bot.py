@@ -635,16 +635,13 @@ def cmd_cleardb():
 
         conn.commit()
 
-        return (
-            f"🗑 <b>Baza wyczyszczona</b>
-
-"
-            f"Usunięto:     {deleted} sygnałów
-"
-            f"Zachowano:    {active_count} aktywnych BUY
-"
-            f"Remindery:    bezpieczne (osobna baza)"
+        msg = (
+            "<b>Baza wyczyszczona</b>\n\n"
+            + f"Usunieto: {deleted} sygnalow\n"
+            + f"Zachowano: {active_count} aktywnych BUY\n"
+            + "Remindery: bezpieczne (osobna baza)"
         )
+        return msg
     except Exception as e:
         return f"❌ Błąd: {e}"
     finally:
