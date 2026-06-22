@@ -80,7 +80,7 @@ class FinnhubAPI:
         Wykonuje GET request do Finnhub API z cache i rate limiting.
         """
         params = params or {}
-        # klucz w headerze X-Finnhub-Token — nie duplikuj w params
+        params['token'] = FINNHUB_API_KEY
 
         cache_key = f"{endpoint}:{str(sorted(params.items()))}"
         cached    = self._cache_get(cache_key)
@@ -253,7 +253,7 @@ class FinnhubAPI:
                     continue
 
                 tx_type  = t.get('transactionCode', '')
-                shares   = abs(int(t.get('share', 0)))
+                shares   = abs(int(t.get('share', 0) or 0))
                 price    = float(t.get('transactionPrice', 0) or 0)
                 value    = shares * price
 
