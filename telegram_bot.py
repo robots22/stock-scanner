@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from config import (
     CLAUDE_CONFIG,
     logger, CONFIG, now_chicago,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS, TELEGRAM_ADMIN_IDS
 )
 
 
@@ -84,6 +84,17 @@ def is_authorized(chat_id):
     return str(chat_id) in [str(cid) for cid in TELEGRAM_CHAT_IDS if cid]
 
 
+def is_admin(chat_id):
+    """Sprawdza czy nadawca ma uprawnienia administratora."""
+    return str(chat_id) in [str(cid) for cid in TELEGRAM_ADMIN_IDS if cid]
+
+
+# Komendy dostępne tylko dla adminów
+ADMIN_COMMANDS = {
+    '/pause', '/resume', '/blacklist', '/remind', '/analyze'
+}
+
+
 def get_db_connection():
     """Zwraca połączenie z bazą danych."""
     try:
@@ -97,11 +108,10 @@ def get_db_connection():
 
 # ==================== KOMENDY ====================
 
-def cmd_help():
-    return (
+def cmd_help(is_admin_user=False):
+    msg = (
         "📋 <b>STOCK SCANNER — KOMENDY</b>\n\n"
         "📊 <b>Analiza:</b>\n"
-        "  /analyze TICKER — ręczna analiza\n"
         "  /top            — TOP 5 sygnałów\n"
         "  /backtest       — analiza wyników z bazy\n\n"
         "📈 <b>Statystyki:</b>\n"
@@ -109,15 +119,22 @@ def cmd_help():
         "  /performance    — trafność BUY/WATCH/AVOID\n"
         "  /cost           — koszt Claude API\n"
         "  /report         — raport tygodniowy\n\n"
-        "⚙️ <b>Kontrola:</b>\n"
+        "⚙️ <b>System:</b>\n"
         "  /status         — stan systemu\n"
-        "  /pause          — zatrzymaj skanowanie\n"
-        "  /resume         — wznów skanowanie\n"
-        "  /blacklist TICK — pomiń ticker (do restartu)\n\n"
-        "⏰ <b>Reminder:</b>\n"
-        "  /remind 7d Tekst przypomnienia\n"
-        "  /reminders      — lista aktywnych reminderów\n"
+        "  /reminders      — lista reminderów\n"
     )
+    if is_admin_user:
+        msg += (
+            "\n🔑 <b>Admin:</b>\n"
+            "  /analyze TICKER — ręczna analiza\n"
+            "  /pause          — zatrzymaj skanowanie\n"
+            "  /resume         — wznów skanowanie\n"
+            "  /blacklist TICK — pomiń ticker (do restartu)\n"
+            "  /remind 7d Tekst — ustaw reminder\n"
+        )
+    else:
+        msg += "\n🔒 Komendy admin dostępne dla administratorów."
+    return msg
 
 
 def cmd_status():
@@ -657,8 +674,16 @@ def run_bot():
                 cmd     = parts[0].lower().split('@')[0]
                 args    = parts[1].strip() if len(parts) > 1 else ''
 
+                # Sprawdź uprawnienia admina dla komend kontrolnych
+                if cmd in ADMIN_COMMANDS and not is_admin(chat_id):
+                    send_message(
+                        "🔒 Ta komenda wymaga uprawnień administratora.",
+                        chat_id=chat_id
+                    )
+                    continue
+
                 if cmd == '/help':
-                    reply = cmd_help()
+                    reply = cmd_help(is_admin_user=is_admin(chat_id))
                 elif cmd == '/status':
                     reply = cmd_status()
                 elif cmd == '/top':

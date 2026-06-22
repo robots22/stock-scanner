@@ -54,6 +54,19 @@ TELEGRAM_CHAT_IDS = [
     if cid
 ]
 
+# Administratorzy — mają dostęp do komend kontrolnych
+# (max 2 chat_id z listy powyżej)
+TELEGRAM_ADMIN_ID   = os.getenv('TELEGRAM_ADMIN_ID',   '')
+TELEGRAM_ADMIN_ID_2 = os.getenv('TELEGRAM_ADMIN_ID_2', '')
+
+TELEGRAM_ADMIN_IDS = [
+    cid for cid in [
+        TELEGRAM_ADMIN_ID,
+        TELEGRAM_ADMIN_ID_2,
+    ]
+    if cid
+]
+
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
