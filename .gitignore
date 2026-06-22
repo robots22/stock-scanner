@@ -231,3 +231,4 @@ logs/
 # Sygnały JSON
 signals_*.json
 heartbeat.json
+backtest_*.json
