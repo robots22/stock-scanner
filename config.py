@@ -122,8 +122,8 @@ CONFIG = {
     # ==================== EXTENDED HOURS ====================
     # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)
     # After-market: 15:00-20:00 CST (16:00-21:00 ET)
-    'premarket_enabled':         True,
-    'aftermarket_enabled':       True,
+    'premarket_enabled':         False,
+    'aftermarket_enabled':       False,
     'premarket_scan_interval':   900,    # co 15 minut
     'aftermarket_scan_interval': 900,    # co 15 minut
     'min_volume_extended':       10_000, # niższy próg poza godzinami
