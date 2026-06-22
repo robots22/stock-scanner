@@ -65,7 +65,8 @@ system_state = {
 
 # Komendy dostępne tylko dla adminów
 ADMIN_COMMANDS = {
-    '/pause', '/resume', '/blacklist', '/remind', '/analyze', '/broadcast'
+    '/pause', '/resume', '/blacklist', '/remind', '/analyze', '/broadcast',
+    '/cleardb'
 }
 
 
@@ -600,6 +601,56 @@ def cmd_analyze(ticker):
             return f"⏳ <b>{ticker}</b> już jest w kolejce."
 
 
+# ==================== CLEARDB ====================
+
+def cmd_cleardb():
+    """
+    Czyści stare sygnały z bazy ale zachowuje:
+    - Aktywne BUY sygnały (monitoring)
+    - Remindery (osobna baza)
+    Używaj zamiast rm scanner.db
+    """
+    conn = get_db_connection()
+    if not conn:
+        return "❌ Błąd połączenia z bazą danych."
+    try:
+        c = conn.cursor()
+
+        # Policz aktywne BUY przed czyszczeniem
+        c.execute("SELECT COUNT(*) FROM signals WHERE monitoring = 1 AND closed = 0")
+        active_count = c.fetchone()[0]
+
+        # Usuń tylko zamknięte/nieaktywne sygnały
+        c.execute("""
+            DELETE FROM signals
+            WHERE monitoring = 0 OR closed = 1
+        """)
+        deleted = c.rowcount
+
+        # Usuń triggery dla usuniętych sygnałów
+        c.execute("""
+            DELETE FROM retriggers
+            WHERE signal_id NOT IN (SELECT id FROM signals)
+        """)
+
+        conn.commit()
+
+        return (
+            f"🗑 <b>Baza wyczyszczona</b>
+
+"
+            f"Usunięto:     {deleted} sygnałów
+"
+            f"Zachowano:    {active_count} aktywnych BUY
+"
+            f"Remindery:    bezpieczne (osobna baza)"
+        )
+    except Exception as e:
+        return f"❌ Błąd: {e}"
+    finally:
+        conn.close()
+
+
 # ==================== REMINDER CHECKER ====================
 
 def check_reminders():
@@ -713,6 +764,8 @@ def run_bot():
                     reply = cmd_backtest()
                 elif cmd == '/report':
                     reply = cmd_report()
+                elif cmd == '/cleardb':
+                    reply = cmd_cleardb()
                 elif cmd == '/analyze':
                     reply = cmd_analyze(args)
                 elif cmd == '/start':

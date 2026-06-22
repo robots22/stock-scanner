@@ -130,20 +130,27 @@ def alert_retrigger(ticker, trigger, details, old_verdict, new_verdict,
                     current_price, entry_price):
     """
     Wysyła alert gdy trigger re-analizy się odpali.
+    Jeśli nowy werdykt to AVOID — wysyła SELL SIGNAL zamiast RE-ANALIZA.
     """
     price_change = ((current_price - entry_price) / entry_price) * 100
 
     trigger_icons = {
-        'VOLUME_DROP':    '📉',
-        'PRICE_REVERSAL': '🔻',
-        'TAKE_PROFIT':    '💰',
+        'VOLUME_DROP':      '📉',
+        'PRICE_REVERSAL':   '🔻',
+        'TAKE_PROFIT':      '💰',
+        'DARKPOOL_SELL':    '🐋',
+        'OPTIONS_BEARISH':  '📊',
+        'UW_ACTIVITY_GONE': '👻',
     }
     icon = trigger_icons.get(trigger, '⚡')
 
     trigger_labels = {
-        'VOLUME_DROP':    'Wolumen słabnie',
-        'PRICE_REVERSAL': 'Cena się cofa',
-        'TAKE_PROFIT':    'Take profit osiągnięty',
+        'VOLUME_DROP':      'Wolumen słabnie',
+        'PRICE_REVERSAL':   'Cena się cofa',
+        'TAKE_PROFIT':      'Take profit osiągnięty',
+        'DARKPOOL_SELL':    'Dark pool SELL',
+        'OPTIONS_BEARISH':  'Options flow bearish',
+        'UW_ACTIVITY_GONE': 'Aktywność UW zniknęła',
     }
     label = trigger_labels.get(trigger, trigger)
 
@@ -158,7 +165,21 @@ def alert_retrigger(ticker, trigger, details, old_verdict, new_verdict,
 
     time_str = now_chicago().strftime('%H:%M CST')
 
-    message = f"""{icon} <b>{ticker} — RE-ANALIZA</b>
+    # SELL SIGNAL — gdy Claude zmienia BUY → AVOID
+    if old_verdict == 'BUY' and new_verdict == 'AVOID':
+        profit_str = f"+{price_change:.1f}% zysku" if price_change > 0                      else f"{price_change:.1f}% straty"
+        message = f"""🔴 <b>SELL SIGNAL — {ticker}</b>
+Trigger: {label}
+Czas: {time_str}
+
+💰 Wejście:  ${entry_price:.2f}
+💰 Teraz:    ${current_price:.2f} ({price_change:+.1f}%)
+📋 Powód: {details}
+
+⚠️ Rozważ zamknięcie pozycji ({profit_str})"""
+
+    else:
+        message = f"""{icon} <b>{ticker} — RE-ANALIZA</b>
 Trigger: {label}
 Czas: {time_str}
 
@@ -167,8 +188,8 @@ Czas: {time_str}
 
 Werdykt: {old_icon} {old_verdict}"""
 
-    if new_verdict:
-        message += f" → {new_icon} {new_verdict}"
+        if new_verdict:
+            message += f" → {new_icon} {new_verdict}"
 
     return send_message(message)
 
