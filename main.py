@@ -64,7 +64,7 @@ from database import (init_db, save_signal, get_signal_history,
 from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message)
-from telegram_bot import (TelegramBot, manual_queue, manual_queue_lock,
+from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 
 
@@ -127,8 +127,8 @@ class StockScanner:
         self.manual_cost_usd    = 0.0
         self._manual_lock       = threading.Lock()
 
-        # Telegram bot
-        self.bot = TelegramBot(self)
+        # Telegram bot v2.0
+        self.bot = None  # uruchamiany w run()
 
         # Sygnał Ctrl+C
         signal.signal(signal.SIGINT,  self._shutdown_handler)
@@ -627,8 +627,8 @@ class StockScanner:
         # Startup alert
         send_startup_message(demo_mode=self.demo_mode)
 
-        # Uruchom Telegram bot w osobnym wątku
-        self.bot.start()
+        # Uruchom Telegram bot v2.0
+        start_bot_thread()
 
         logger.info("System uruchomiony — Ctrl+C aby zatrzymać")
 
@@ -744,9 +744,7 @@ class StockScanner:
         print("  ZATRZYMYWANIE SYSTEMU...")
         print("="*55)
 
-        # Zatrzymaj Telegram bot
-        if hasattr(self, 'bot') and self.bot:
-            self.bot.stop()
+        # Telegram bot v2.0 zatrzymuje się automatycznie (daemon thread)
 
         stats = get_stats()
         send_shutdown_message(stats)
