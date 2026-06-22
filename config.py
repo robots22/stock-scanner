@@ -54,6 +54,15 @@ TELEGRAM_CHAT_IDS = [
     if cid
 ]
 
+# Admin Chat IDs — dostęp do komend /pause /resume /blacklist /analyze
+TELEGRAM_ADMIN_ID   = os.getenv('TELEGRAM_ADMIN_ID', TELEGRAM_CHAT_ID)
+TELEGRAM_ADMIN_ID_2 = os.getenv('TELEGRAM_ADMIN_ID_2', '')
+
+TELEGRAM_ADMIN_IDS = [
+    cid for cid in [TELEGRAM_ADMIN_ID, TELEGRAM_ADMIN_ID_2]
+    if cid
+]
+
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
