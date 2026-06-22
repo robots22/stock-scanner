@@ -54,23 +54,10 @@ TELEGRAM_CHAT_IDS = [
     if cid
 ]
 
-# Administratorzy — mają dostęp do komend kontrolnych
-# (max 2 chat_id z listy powyżej)
-TELEGRAM_ADMIN_ID   = os.getenv('TELEGRAM_ADMIN_ID',   '')
-TELEGRAM_ADMIN_ID_2 = os.getenv('TELEGRAM_ADMIN_ID_2', '')
-
-TELEGRAM_ADMIN_IDS = [
-    cid for cid in [
-        TELEGRAM_ADMIN_ID,
-        TELEGRAM_ADMIN_ID_2,
-    ]
-    if cid
-]
-
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
-DEMO_MODE = False
+DEMO_MODE = True
 
 SYSTEM_NAME    = "STOCK SCANNER"
 SYSTEM_VERSION = "1.0"
@@ -117,6 +104,10 @@ CONFIG = {
     # Logi
     'log_dir': 'logs',
     'log_file': 'scanner.log',
+
+    # Ignoruj sygnały w pierwszych N minutach po otwarciu rynku
+    # Ceny small-cap są niereliable na początku sesji (wide spread, mała płynność)
+    'market_open_filter_minutes': 15,
 
     # ==================== EXTENDED HOURS ====================
     # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)
