@@ -231,18 +231,19 @@ def update_outcomes(polygon_api):
                 if entry_price <= 0:
                     continue
 
-                try:
-                    current_data  = polygon_api.get_ticker_details(ticker)
-                    current_price = float(current_data.get('price', 0) or 0)
-                except Exception:
-                    current_price = 0
+                # Pomiń warranty, prawa, unity — ceny niereliable
+                ticker_upper = ticker.upper()
+                if (ticker_upper.endswith('W') or
+                        ticker_upper.endswith('R') or
+                        ticker_upper.endswith('U') or
+                        '.WS' in ticker_upper or
+                        '.RT' in ticker_upper):
+                    continue
+
+                current_data  = polygon_api.get_ticker_details(ticker)
+                current_price = float(current_data.get('price', 0) or 0)
 
                 if current_price <= 0:
-                    # Ticker nieznany w Polygon/Alpaca — oznacz jako nieaktywny
-                    c.execute(
-                        "UPDATE signals SET close_reason = ? WHERE id = ?",
-                        ("ticker_not_found", row['id'])
-                    )
                     continue
 
                 change_pct = ((current_price - entry_price) / entry_price) * 100
