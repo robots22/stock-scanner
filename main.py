@@ -161,11 +161,39 @@ class StockScanner:
         # 2. Pobierz dark pool flow (UW)
         dark_pool_flow = self.uw.get_dark_pool_flow()
 
-        # 3. Pre-filter → TOP 5 (bez Finnhub — za dużo wywołań API)
-        # Finnhub pobieramy tylko dla TOP 5 po pre-filtrze
+        # 3. Pobierz UW options flow i news dla szybkiego pre-filtra
+        # Robimy to dla próbki tickerów z najwyższym volume (top 50)
+        # żeby nie przekraczać limitów API
+        universe_sorted = sorted(
+            universe,
+            key=lambda x: x.get('volume_ratio', 0),
+            reverse=True
+        )[:50]
+
+        uw_flow_cache = {}
+        news_cache    = {}
+
+        for t in universe_sorted:
+            ticker = t['ticker']
+            try:
+                flow = self.uw.get_options_flow(ticker)
+                if flow and flow.get('unusual'):
+                    uw_flow_cache[ticker] = flow
+            except Exception:
+                pass
+            try:
+                news = self.polygon.get_news(ticker, limit=2)
+                if news:
+                    news_cache[ticker] = news
+            except Exception:
+                pass
+
+        # 4. Pre-filter → TOP 5 z options flow i news
         top5 = get_top_tickers(
             universe,
             dark_pool_flow=dark_pool_flow,
+            uw_flow_cache=uw_flow_cache,
+            news_cache=news_cache,
             top_n=CONFIG['max_tickers_for_claude'],
         )
 
@@ -173,15 +201,16 @@ class StockScanner:
             logger.warning("Pre-filter: brak tickerów — pomijam analizę")
             return
 
-        # 4. Pobierz dane Finnhub tylko dla TOP 5
+        # 5. Pobierz dane Finnhub tylko dla TOP 5
         for t in top5:
             ticker = t['ticker']
             earnings = self.fh.get_earnings_calendar(ticker)
             insider  = self.fh.get_insider_transactions(ticker)
             t['earnings'] = earnings
             t['insider']  = insider
-            t['raw_data']['earnings'] = earnings
-            t['raw_data']['insider']  = insider
+            if t.get('raw_data'):
+                t['raw_data']['earnings'] = earnings
+                t['raw_data']['insider']  = insider
 
         with self._lock:
             self.current_top5 = top5
