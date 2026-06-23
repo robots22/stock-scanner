@@ -232,3 +232,8 @@ logs/
 signals_*.json
 heartbeat.json
 backtest_*.json
+
+#Workspace
+*.code-workspace
+
+*.code-workspace
