@@ -64,9 +64,9 @@ TELEGRAM_ADMIN_IDS = [
 ]
 
 # ==================== TRYB SYSTEMU ====================
-# DEMO = True  → MockPolygon (bez kluczy API)
-# DEMO = False → Prawdziwe dane (wymagane klucze API)
-DEMO_MODE = True
+# DEMO_MODE sterowane przez .env — nigdy nie zmieniaj tutaj!
+# W .env: DEMO_MODE=False (live) lub DEMO_MODE=True (demo)
+DEMO_MODE = os.getenv('DEMO_MODE', 'False').lower() == 'true'
 
 SYSTEM_NAME    = "STOCK SCANNER"
 SYSTEM_VERSION = "1.0"
