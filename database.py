@@ -3,10 +3,11 @@
 STOCK SCANNER - PLIK 5: BAZA DANYCH (v2)
 Zapisz jako database.py w folderze stock-scanner
 
-Zmiany v2:
-- Usunięto tabelę price_snapshots (monitoring przez UW zamiast DB)
-- check_retrigger_conditions() teraz przyjmuje dane UW (dark pool + options)
-- Czystsza architektura — DB tylko do sygnałów i historii
+Historia zmian:
+    v2.0 — usunięto price_snapshots, monitoring przez UW
+    v2.1 — fix update_outcomes: obsługa nieznanych tickerów
+           - "No item with that key" → debug zamiast warning
+           - ticker nieznany → oznaczany close_reason=ticker_not_found
 """
 
 import sqlite3
@@ -230,10 +231,18 @@ def update_outcomes(polygon_api):
                 if entry_price <= 0:
                     continue
 
-                current_data  = polygon_api.get_ticker_details(ticker)
-                current_price = current_data.get('price', 0)
+                try:
+                    current_data  = polygon_api.get_ticker_details(ticker)
+                    current_price = float(current_data.get('price', 0) or 0)
+                except Exception:
+                    current_price = 0
 
                 if current_price <= 0:
+                    # Ticker nieznany w Polygon/Alpaca — oznacz jako nieaktywny
+                    c.execute(
+                        "UPDATE signals SET close_reason = ? WHERE id = ?",
+                        ("ticker_not_found", row['id'])
+                    )
                     continue
 
                 change_pct = ((current_price - entry_price) / entry_price) * 100
@@ -260,7 +269,11 @@ def update_outcomes(polygon_api):
                     updated += 1
 
             except Exception as e:
-                logger.warning(f"Błąd update outcome dla {row['ticker']}: {e}")
+                err_str = str(e).lower()
+                if 'no item with that key' in err_str or 'not found' in err_str:
+                    logger.debug(f"Ticker nieznany w API: {row['ticker']} — pomijam")
+                else:
+                    logger.warning(f"Błąd update outcome dla {row['ticker']}: {e}")
 
         conn.commit()
 
