@@ -66,7 +66,7 @@ TELEGRAM_ADMIN_IDS = [
 # ==================== TRYB SYSTEMU ====================
 # DEMO = True  → MockPolygon (bez kluczy API)
 # DEMO = False → Prawdziwe dane (wymagane klucze API)
-DEMO_MODE = os.getenv('DEMO_MODE', 'False').lower() == 'true'
+DEMO_MODE = True
 
 SYSTEM_NAME    = "STOCK SCANNER"
 SYSTEM_VERSION = "1.0"
@@ -122,8 +122,8 @@ CONFIG = {
     # ==================== EXTENDED HOURS ====================
     # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)
     # After-market: 15:00-20:00 CST (16:00-21:00 ET)
-    'premarket_enabled':         False,
-    'aftermarket_enabled':       False,
+    'premarket_enabled':         True,
+    'aftermarket_enabled':       True,
     'premarket_scan_interval':   900,    # co 15 minut
     'aftermarket_scan_interval': 900,    # co 15 minut
     'min_volume_extended':       10_000, # niższy próg poza godzinami
@@ -154,20 +154,26 @@ CLAUDE_CONFIG = {
     'manual_analysis_daily_usd':  2.00 / 22,   # ~$0.09/dzień
 
     # System prompt dla Claude — analityk giełdowy
-    'system_prompt': """Jesteś doświadczonym analitykiem giełdowym specjalizującym się 
-w small-cap stocks (poniżej $15). Twoim zadaniem jest analiza danych rynkowych 
-i wydanie jednego z trzech werdyktów:
+    'system_prompt': """Jesteś agresywnym day traderem small-cap stocks (poniżej $15).
+Szukasz krótkoterminowych ruchów 30-120 minut. Cel: +5-15% w ciągu godziny.
 
-BUY   - wyraźny sygnał do zakupu, wysoka pewność
-WATCH - interesujący ticker, obserwuj ale nie kupuj jeszcze  
-AVOID - brak sygnału lub sygnał niedźwiedzi, omijaj
+Wydaj jeden z trzech werdyktów:
 
-Twoja analiza powinna uwzględniać:
-- Momentum cenowe i wolumenowe
-- Dark pool i opcje (smart money)
-- Newsy i eventy (earnings, FDA, insider transactions)
-- Historię poprzednich sygnałów dla tego tickera
-- Ryzyko manipulacji (pump & dump, false breakout)
+BUY   - wchodzisz teraz. Kryteria (wystarczy 2-3 z poniższych):
+        * Volume ratio > 2x średniej 30-dniowej
+        * Zmiana ceny > +5% z momentum
+        * Jakikolwiek fundamentalny katalizator (news, earnings, FDA, kontrakt)
+        * Dark pool lub opcje potwierdzają kierunek
+        * Ticker przebija opór z wolumenem
+
+WATCH - interesujący setup ale brakuje potwierdzenia. Obserwuj kolejny cykl.
+
+AVOID - brak katalizatora, manipulacja (pump & dump), lub sygnał bearish.
+        Pump & dump: wolumen > 10x BEZ fundamentalnego powodu.
+
+WAŻNE: Nie bądź nadmiernie ostrożny. Jeśli ticker spełnia 2-3 kryteria BUY
+— wydaj BUY. Lepiej wejść w dobry setup niż przegapić ruch.
+Warranty (W), ETF lewarowane, spółki groszowe < $0.10 → zawsze AVOID.
 
 Odpowiedź zawsze w formacie:
 WERDYKT: [BUY/WATCH/AVOID]
