@@ -369,23 +369,53 @@ class UnusualWhalesAPI:
             item = item[0]
 
         try:
-            call_volume = int(item.get('call_volume', 0) or 0)
-            put_volume  = int(item.get('put_volume', 0) or 0)
-            call_put    = round(call_volume / max(put_volume, 1), 2)
+            call_volume     = int(item.get('call_volume', 0) or 0)
+            put_volume      = int(item.get('put_volume', 0) or 0)
 
-            sentiment = 'neutral'
-            if call_put >= 1.5:
+            # ask_side = aggressive buyers (bullish)
+            # bid_side = aggressive sellers (bearish)
+            call_ask_side   = int(item.get('call_volume_ask_side', 0) or 0)
+            call_bid_side   = int(item.get('call_volume_bid_side', 0) or 0)
+            put_ask_side    = int(item.get('put_volume_ask_side', 0) or 0)
+            put_bid_side    = int(item.get('put_volume_bid_side', 0) or 0)
+
+            # Bullish premium = calls bought (ask side) + puts sold (bid side)
+            bullish_premium = float(item.get('bullish_premium', 0) or 0)
+            bearish_premium = float(item.get('bearish_premium', 0) or 0)
+
+            call_put = round(call_volume / max(put_volume, 1), 2)
+
+            # Kierunek oparty na ask/bid side (bardziej wiarygodny)
+            net_call_direction = call_ask_side - call_bid_side
+            net_put_direction  = put_ask_side  - put_bid_side
+
+            if bullish_premium > bearish_premium * 1.5:
                 sentiment = 'bullish'
-            elif call_put <= 0.7:
+            elif bearish_premium > bullish_premium * 1.5:
                 sentiment = 'bearish'
+            elif net_call_direction > 0:
+                sentiment = 'bullish'
+            elif net_call_direction < 0:
+                sentiment = 'bearish'
+            else:
+                sentiment = 'neutral'
+
+            unusual = (
+                call_put > 3.0 or call_put < 0.3 or
+                abs(bullish_premium - bearish_premium) > 50_000
+            )
 
             return {
-                'ticker':         ticker,
-                'call_volume':    call_volume,
-                'put_volume':     put_volume,
-                'call_put_ratio': call_put,
-                'unusual':        call_put > 3.0 or call_put < 0.3,
-                'sentiment':      sentiment,
+                'ticker':           ticker,
+                'call_volume':      call_volume,
+                'put_volume':       put_volume,
+                'call_put_ratio':   call_put,
+                'call_ask_side':    call_ask_side,
+                'call_bid_side':    call_bid_side,
+                'bullish_premium':  bullish_premium,
+                'bearish_premium':  bearish_premium,
+                'unusual':          unusual,
+                'sentiment':        sentiment,
             }
         except Exception:
             return self._options_flow_fallback(ticker)

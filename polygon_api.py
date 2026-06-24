@@ -362,7 +362,7 @@ class PolygonAPI:
           float — ostatnia wartość RSI (0-100) lub None
         """
         try:
-            url = f"{self.BASE_URL}/v1/indicators/rsi/{ticker}"
+            url = f"{POLYGON_BASE_URL}/v1/indicators/rsi/{ticker}"
             params = {
                 'apiKey':      self.api_key,
                 'timespan':    timespan,
@@ -391,7 +391,7 @@ class PolygonAPI:
         try:
             results = []
             for w in [window, 21]:
-                url = f"{self.BASE_URL}/v1/indicators/ema/{ticker}"
+                url = f"{POLYGON_BASE_URL}/v1/indicators/ema/{ticker}"
                 params = {
                     'apiKey':      self.api_key,
                     'timespan':    timespan,
@@ -426,7 +426,7 @@ class PolygonAPI:
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
-            url = f"{self.BASE_URL}/v3/reference/tickers/{ticker}"
+            url = f"{POLYGON_BASE_URL}/v3/reference/tickers/{ticker}"
             params = {'apiKey': self.api_key}
             response = self.session.get(url, params=params, timeout=10)
             if response.status_code == 200:
@@ -446,7 +446,7 @@ class PolygonAPI:
         Rozróżnia Reuters/Bloomberg (wiarygodne) od PRNewswire (PR).
         """
         try:
-            url = f"{self.BASE_URL}/v2/reference/news"
+            url = f"{POLYGON_BASE_URL}/v2/reference/news"
             params = {
                 'apiKey':      self.api_key,
                 'ticker':      ticker,
@@ -514,7 +514,7 @@ class PolygonAPI:
             today     = date.today().isoformat()
             yesterday = (date.today() - timedelta(days=1)).isoformat()
 
-            url = f"{self.BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{yesterday}/{today}"
+            url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{yesterday}/{today}"
             params = {
                 'apiKey':   self.api_key,
                 'adjusted': 'true',
