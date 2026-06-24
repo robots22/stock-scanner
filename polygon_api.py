@@ -364,7 +364,7 @@ class PolygonAPI:
         try:
             url = f"{POLYGON_BASE_URL}/v1/indicators/rsi/{ticker}"
             params = {
-                'apiKey':      self.api_key,
+                'apiKey':      POLYGON_API_KEY,
                 'timespan':    timespan,
                 'window':      window,
                 'series_type': 'close',
@@ -393,7 +393,7 @@ class PolygonAPI:
             for w in [window, 21]:
                 url = f"{POLYGON_BASE_URL}/v1/indicators/ema/{ticker}"
                 params = {
-                    'apiKey':      self.api_key,
+                    'apiKey':      POLYGON_API_KEY,
                     'timespan':    timespan,
                     'window':      w,
                     'series_type': 'close',
@@ -427,7 +427,7 @@ class PolygonAPI:
                 return self._cache[cache_key]
 
             url = f"{POLYGON_BASE_URL}/v3/reference/tickers/{ticker}"
-            params = {'apiKey': self.api_key}
+            params = {'apiKey': POLYGON_API_KEY}
             response = self.session.get(url, params=params, timeout=10)
             if response.status_code == 200:
                 data        = response.json()
@@ -448,7 +448,7 @@ class PolygonAPI:
         try:
             url = f"{POLYGON_BASE_URL}/v2/reference/news"
             params = {
-                'apiKey':      self.api_key,
+                'apiKey':      POLYGON_API_KEY,
                 'ticker':      ticker,
                 'limit':       limit,
                 'sort':        'published_utc',
@@ -516,7 +516,7 @@ class PolygonAPI:
 
             url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{yesterday}/{today}"
             params = {
-                'apiKey':   self.api_key,
+                'apiKey':   POLYGON_API_KEY,
                 'adjusted': 'true',
                 'sort':     'desc',
                 'limit':    window + 1,
