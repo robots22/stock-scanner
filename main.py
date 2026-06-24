@@ -32,6 +32,7 @@ Historia zmian:
            - self.alpaca = None w trybie DEMO
     v1.7 — dodano extended hours (pre/after-market) i manualną analizę
     v1.8 — dodano filtr pierwszych 15 minut po otwarciu rynku
+
            - ceny small-cap niereliable w pierwszych minutach sesji
            - pomija cykl główny i UW scan do 8:45 CST
            - pre-market: 4:00-8:30 CST, co 15 min, vol > 10k
@@ -122,6 +123,8 @@ class StockScanner:
         # Extended hours
         self.last_extended_scan = None
 
+
+
         # Kolejka manualnych analiz (z Telegram /analyze TICKER)
         self.manual_queue       = []
         self.manual_cost_usd    = 0.0
@@ -161,26 +164,41 @@ class StockScanner:
         # 2. Pobierz dark pool flow (UW)
         dark_pool_flow = self.uw.get_dark_pool_flow()
 
-        # 3. Pobierz UW options flow i news dla szybkiego pre-filtra
-        # Robimy to dla próbki tickerów z najwyższym volume (top 50)
-        # żeby nie przekraczać limitów API
-        universe_sorted = sorted(
-            universe,
-            key=lambda x: x.get('volume_ratio', 0),
-            reverse=True
-        )[:50]
-
+        # 3. Pobierz UW unusual flow (market-wide) i news dla pre-filtra
         uw_flow_cache = {}
         news_cache    = {}
 
-        for t in universe_sorted:
+        try:
+            # Pobierz tickery z unusual options activity (market-wide)
+            unusual_tickers = self.uw.get_tickers_with_unusual_flow(
+                min_premium=50_000, limit=30
+            )
+            for t in unusual_tickers:
+                ticker = t['ticker']
+                uw_flow_cache[ticker] = {
+                    'call_volume':    t.get('call_premium', 0),
+                    'put_volume':     t.get('put_premium', 0),
+                    'call_put_ratio': round(
+                        t.get('call_premium', 0) /
+                        max(t.get('put_premium', 1), 1), 2
+                    ),
+                    'unusual':   True,
+                    'sentiment': 'bullish' if t.get('bullish') else 'bearish',
+                }
+            logger.info(f"UW unusual flow: {len(uw_flow_cache)} tickerów "
+                        f"z options activity")
+        except Exception as e:
+            logger.warning(f"UW flow cache błąd: {e}")
+
+        # Pobierz newsy dla TOP 30 tickerów po volume_ratio
+        universe_top = sorted(
+            universe,
+            key=lambda x: x.get('volume_ratio', 0),
+            reverse=True
+        )[:30]
+
+        for t in universe_top:
             ticker = t['ticker']
-            try:
-                flow = self.uw.get_options_flow(ticker)
-                if flow and flow.get('unusual'):
-                    uw_flow_cache[ticker] = flow
-            except Exception:
-                pass
             try:
                 news = self.polygon.get_news(ticker, limit=2)
                 if news:
@@ -188,12 +206,40 @@ class StockScanner:
             except Exception:
                 pass
 
-        # 4. Pre-filter → TOP 5 z options flow i news
+        logger.info(f"News cache: {len(news_cache)} tickerów z newsami")
+
+        # Pobierz RSI i EMA dla TOP 20 tickerów (wczesne sygnały)
+        technical_cache = {}
+        universe_rsi = sorted(
+            universe,
+            key=lambda x: x.get('volume_ratio', 0),
+            reverse=True
+        )[:20]
+
+        for t in universe_rsi:
+            ticker = t['ticker']
+            try:
+                rsi = self.polygon.get_rsi(ticker, window=14, timespan='minute')
+                ema9, ema21 = self.polygon.get_ema(ticker, window=9, timespan='minute')
+                if rsi or ema9:
+                    technical_cache[ticker] = {
+                        'rsi':  rsi,
+                        'ema9': ema9,
+                        'ema21': ema21,
+                    }
+            except Exception:
+                pass
+
+        if technical_cache:
+            logger.info(f"Technical cache: {len(technical_cache)} tickerów z RSI/EMA")
+
+        # 4. Pre-filter → TOP 5 z options flow, news i technicznych
         top5 = get_top_tickers(
             universe,
             dark_pool_flow=dark_pool_flow,
             uw_flow_cache=uw_flow_cache,
             news_cache=news_cache,
+            technical_cache=technical_cache,
             top_n=CONFIG['max_tickers_for_claude'],
         )
 
@@ -225,7 +271,30 @@ class StockScanner:
 
         # 6. Zapisz sygnały i wyślij alerty
         for result, ticker_data in zip(results, top5):
-            signal_id = save_signal(result, ticker_data)
+            signal_id = save_signal(result, ticker_data,
+                                    polygon_api=self.polygon)
+            # Dodaj SL/TP do result dla alertu Telegram
+            if result.get('verdict') == 'BUY' and signal_id:
+                try:
+                    conn = get_connection()
+                    c    = conn.cursor()
+                    c.execute(
+                        'SELECT stop_loss, take_profit, rr_ratio, '
+                        'risk_pct, reward_pct, sl_basis '
+                        'FROM signals WHERE id = ?',
+                        (signal_id,)
+                    )
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        result['stop_loss']   = row[0]
+                        result['take_profit'] = row[1]
+                        result['rr_ratio']    = row[2]
+                        result['risk_pct']    = row[3]
+                        result['reward_pct']  = row[4]
+                        result['sl_basis']    = row[5]
+                except Exception:
+                    pass
             self._send_alert(result, ticker_data)
 
         # 7. Zaktualizuj automatyczne wyniki
@@ -774,6 +843,8 @@ class StockScanner:
         print("="*55)
 
         # Telegram bot v2.0 zatrzymuje się automatycznie (daemon thread)
+
+
 
         stats = get_stats()
         send_shutdown_message(stats)

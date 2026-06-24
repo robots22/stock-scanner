@@ -61,6 +61,15 @@ def init_db():
                 outcome_4h_at   TEXT,
                 outcome_24h_at  TEXT,
 
+                -- Stop loss i take profit (obliczane przy BUY)
+                stop_loss       REAL,
+                take_profit     REAL,
+                rr_ratio        REAL,
+                risk_pct        REAL,
+                reward_pct      REAL,
+                sl_basis        TEXT,
+                atr             REAL,
+
                 -- Status monitorowania
                 monitoring      INTEGER DEFAULT 0,
                 monitoring_end  TEXT,
@@ -93,10 +102,11 @@ def init_db():
 
 # ==================== ZAPIS SYGNAŁÓW ====================
 
-def save_signal(result, ticker_data):
+def save_signal(result, ticker_data, polygon_api=None):
     """
     Zapisuje sygnał Claude'a do bazy.
     Aktywuje monitorowanie dla sygnałów BUY.
+    Oblicza dynamiczny stop-loss i take-profit dla BUY.
     """
     conn = get_connection()
     try:
@@ -110,13 +120,47 @@ def save_signal(result, ticker_data):
             end_time = now_chicago() + timedelta(hours=2)
             monitoring_end = end_time.isoformat()
 
+        # Oblicz stop-loss i take-profit dla BUY
+        stop_loss   = None
+        take_profit = None
+        rr_ratio    = None
+        risk_pct    = None
+        reward_pct  = None
+        sl_basis    = None
+        atr         = None
+
+        if verdict == 'BUY' and polygon_api:
+            try:
+                entry_price = ticker_data.get('price', 0)
+                vwap        = ticker_data.get('vwap', 0)
+                lod         = ticker_data.get('low', 0)
+                ticker      = result.get('ticker', '')
+
+                if entry_price > 0:
+                    sl_data = polygon_api.calculate_stop_loss(
+                        ticker, entry_price,
+                        vwap=vwap, lod=lod
+                    )
+                    stop_loss   = sl_data['stop_loss']
+                    take_profit = sl_data['take_profit']
+                    rr_ratio    = sl_data['rr_ratio']
+                    risk_pct    = sl_data['risk_pct']
+                    reward_pct  = sl_data['reward_pct']
+                    sl_basis    = sl_data['basis']
+                    atr         = sl_data['atr']
+            except Exception as e:
+                logger.warning(f"Stop-loss calc error: {e}")
+
         c.execute('''
             INSERT INTO signals (
                 ticker, timestamp, verdict, confidence,
                 justification, risk, price, volume,
                 volume_ratio, change_pct, score, reasons,
-                raw_response, demo_mode, monitoring, monitoring_end
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                raw_response, demo_mode, monitoring, monitoring_end,
+                stop_loss, take_profit, rr_ratio, risk_pct,
+                reward_pct, sl_basis, atr
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?)
         ''', (
             result.get('ticker'),
             result.get('timestamp', now_chicago().isoformat()),
@@ -134,14 +178,18 @@ def save_signal(result, ticker_data):
             1 if result.get('demo_mode') else 0,
             monitoring,
             monitoring_end,
+            stop_loss, take_profit, rr_ratio, risk_pct,
+            reward_pct, sl_basis, atr,
         ))
 
         signal_id = c.lastrowid
         conn.commit()
 
         if monitoring:
+            sl_str = f" | SL: ${stop_loss:.2f} | TP: ${take_profit:.2f}" \
+                     if stop_loss else ""
             logger.info(f"DB: BUY {result.get('ticker')} (id={signal_id}) "
-                        f"— monitoring do {monitoring_end[:16]}")
+                        f"— monitoring do {monitoring_end[:16]}{sl_str}")
         else:
             logger.info(f"DB: {verdict} {result.get('ticker')} (id={signal_id})")
 

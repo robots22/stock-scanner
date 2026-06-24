@@ -100,13 +100,36 @@ def alert_signal(result, ticker_data):
 
     time_str = now_chicago().strftime('%H:%M CST')
 
+    # Stop-loss i take-profit (z bazy lub z result)
+    stop_loss   = result.get('stop_loss')
+    take_profit = result.get('take_profit')
+    rr_ratio    = result.get('rr_ratio')
+    risk_pct    = result.get('risk_pct')
+    reward_pct  = result.get('reward_pct')
+    sl_basis    = result.get('sl_basis', '')
+
+    # Sekcja SL/TP dla BUY
+    sl_tp_str = ''
+    if verdict == 'BUY' and stop_loss and take_profit:
+        basis_label = {
+            'vwap':  'VWAP',
+            'atr':   'ATR',
+            'pct_4': '4% stały',
+        }.get(sl_basis, sl_basis)
+
+        sl_tp_str = f"""
+🎯 <b>Plan pozycji:</b>
+  Stop loss:   <b>${stop_loss:.2f}</b> (-{risk_pct:.1f}%) [{basis_label}]
+  Take profit: <b>${take_profit:.2f}</b> (+{reward_pct:.1f}%)
+  R/R ratio:   {rr_ratio:.1f}:1"""
+
     message = f"""{icon} <b>{ticker} — {verdict_str}</b>
 Pewność: {confidence_str} {confidence}
 Czas: {time_str}
 
 💰 Cena: <b>${price:.2f}</b> ({change_pct:+.1f}%)
 📊 Wolumen: {volume:,} ({volume_ratio:.1f}x średniej)
-
+{sl_tp_str}
 📋 Sygnały:
 {reasons_str}
 
