@@ -144,8 +144,8 @@ CLAUDE_CONFIG = {
 
     # Twardy limit kosztów Claude API
     # System zatrzymuje wywołania Claude gdy limit dzienny zostanie przekroczony
-    'monthly_budget_usd':        25.00,
-    'daily_budget_usd':          25.00 / 22,  # ~$1.14/dzień (22 dni handlowe)
+    'monthly_budget_usd':        50.00,
+    'daily_budget_usd':          50.00 / 22,  # ~$1.14/dzień (22 dni handlowe)
     'cost_per_call_usd':         0.0028,       # Sonnet: ~500 in + 200 out tokenów
 
     # Osobny budżet dla manualnej analizy (Telegram /analyze)
