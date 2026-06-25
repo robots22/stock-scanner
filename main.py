@@ -67,6 +67,7 @@ from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
                               send_shutdown_message)
 from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
+from alpaca_trader import AlpacaPaperTrader
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -129,6 +130,9 @@ class StockScanner:
         self.manual_queue       = []
         self.manual_cost_usd    = 0.0
         self._manual_lock       = threading.Lock()
+
+        # Alpaca Paper Trader
+        self.trader = AlpacaPaperTrader()
 
         # Telegram bot v2.0
         self.bot = None  # uruchamiany w run()
@@ -296,6 +300,18 @@ class StockScanner:
                 except Exception:
                     pass
             self._send_alert(result, ticker_data)
+
+            # Alpaca Paper — otwórz pozycję przy BUY
+            if result.get('verdict') == 'BUY' and self.trader.enabled:
+                try:
+                    self.trader.buy(
+                        ticker=result.get('ticker'),
+                        entry_price=ticker_data.get('price', 0),
+                        stop_loss=result.get('stop_loss'),
+                        take_profit=result.get('take_profit'),
+                    )
+                except Exception as e:
+                    logger.error(f"Paper trader BUY error: {e}")
 
         # 7. Zaktualizuj automatyczne wyniki
         update_outcomes(self.polygon)
@@ -485,6 +501,21 @@ class StockScanner:
                 # Zamknij monitorowanie jeśli zmienił się na AVOID
                 if new_verdict == 'AVOID':
                     close_signal(sig['id'], f"RE-ANALIZA → {new_verdict}")
+                    # Alpaca Paper — zamknij pozycję
+                    if self.trader.enabled:
+                        try:
+                            self.trader.sell(ticker, reason='BUY_TO_AVOID')
+                        except Exception as e:
+                            logger.error(f"Paper trader SELL error: {e}")
+
+                # Zamknij przy STOP_LOSS
+                if trigger == 'STOP_LOSS':
+                    close_signal(sig['id'], 'STOP_LOSS')
+                    if self.trader.enabled:
+                        try:
+                            self.trader.sell(ticker, reason='STOP_LOSS')
+                        except Exception as e:
+                            logger.error(f"Paper trader SELL SL error: {e}")
 
             except Exception as e:
                 logger.error(f"Błąd monitorowania {ticker}: {e}")
