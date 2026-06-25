@@ -343,6 +343,61 @@ class PolygonAPI:
 
     # ==================== NEWSY ====================
 
+    def get_recent_news_tickers(self, hours=2, limit=100):
+        """
+        Market-wide news scan — pobiera wszystkie swieze newsy
+        i zwraca slownik {ticker: [newsy]} dla tickerow small-cap.
+
+        Uzywane jako glowne zrodlo news cache zamiast per-ticker.
+        Dzieki temu nie przegapiamy tickerow z newsem ale niskim volume.
+
+        Endpoint: GET /v2/reference/news?published_utc.gte=X
+        """
+        from datetime import datetime, timezone, timedelta
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours))
+        since_str = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        data = self._get(
+            '/v2/reference/news',
+            params={
+                'published_utc.gte': since_str,
+                'order':  'desc',
+                'sort':   'published_utc',
+                'limit':  limit,
+            },
+            cache_ttl=120,  # cache 2 minuty
+        )
+
+        if not data:
+            return {}
+
+        news_by_ticker = {}
+        articles = data.get('results', [])
+
+        for article in articles:
+            tickers = article.get('tickers', [])
+            if not tickers:
+                continue
+            if isinstance(tickers, str):
+                # czasem zwracane jako string "['AAPL', 'MSFT']"
+                import ast
+                try:
+                    tickers = ast.literal_eval(tickers)
+                except Exception:
+                    continue
+
+            for ticker in tickers:
+                if not ticker or len(ticker) > 6:
+                    continue
+                if ticker not in news_by_ticker:
+                    news_by_ticker[ticker] = []
+                news_by_ticker[ticker].append(article)
+
+        logger.info(f"Market news scan: {len(articles)} artykulow "
+                    f"→ {len(news_by_ticker)} tickerow z newsami (ostatnie {hours}h)")
+        return news_by_ticker
+
     def get_news(self, ticker, limit=3):
         """
         Zwraca newsy dla tickera z ostatnich 24h.

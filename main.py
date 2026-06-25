@@ -194,23 +194,22 @@ class StockScanner:
         except Exception as e:
             logger.warning(f"UW flow cache błąd: {e}")
 
-        # Pobierz newsy dla TOP 30 tickerów po volume_ratio
-        universe_top = sorted(
-            universe,
-            key=lambda x: x.get('volume_ratio', 0),
-            reverse=True
-        )[:30]
-
-        for t in universe_top:
-            ticker = t['ticker']
-            try:
-                news = self.polygon.get_news(ticker, limit=2)
-                if news:
-                    news_cache[ticker] = news
-            except Exception:
-                pass
-
-        logger.info(f"News cache: {len(news_cache)} tickerów z newsami")
+        # News cache — market-wide scan ostatnie 2h
+        # Pobieramy wszystkie swieze newsy naraz zamiast per-ticker
+        # Nie przegapiamy tickerow z newsem ale niskim volume
+        try:
+            news_cache = self.polygon.get_recent_news_tickers(hours=2, limit=100)
+        except Exception as e:
+            logger.warning(f"Market news scan error: {e}")
+            # Fallback: per-ticker dla TOP 30
+            for t in sorted(universe, key=lambda x: x.get('volume_ratio', 0),
+                            reverse=True)[:30]:
+                try:
+                    news = self.polygon.get_news(t['ticker'], limit=2)
+                    if news:
+                        news_cache[t['ticker']] = news
+                except Exception:
+                    pass
 
         # Pobierz RSI i EMA dla TOP 20 tickerów (wczesne sygnały)
         technical_cache = {}
@@ -625,19 +624,19 @@ class StockScanner:
 
         logger.info(f"Pre-market: {len(filtered)} tickerow w universe")
 
-        # Pobierz newsy dla TOP 50 po volume
+        # News cache — market-wide scan ostatnie 4h (szersze okno pre-market)
         news_cache = {}
-        top_by_vol = sorted(filtered, key=lambda x: x.get('volume', 0), reverse=True)[:50]
-        for t in top_by_vol:
-            ticker = t['ticker']
-            try:
-                news = self.polygon.get_news(ticker, limit=3)
-                if news:
-                    news_cache[ticker] = news
-            except Exception:
-                pass
-
-        logger.info(f"Pre-market: {len(news_cache)} tickerow z newsami")
+        try:
+            news_cache = self.polygon.get_recent_news_tickers(hours=4, limit=100)
+        except Exception as e:
+            logger.warning(f"Pre-market news scan error: {e}")
+            for t in sorted(filtered, key=lambda x: x.get('volume', 0), reverse=True)[:50]:
+                try:
+                    news = self.polygon.get_news(t['ticker'], limit=3)
+                    if news:
+                        news_cache[t['ticker']] = news
+                except Exception:
+                    pass
 
         # UW unusual flow
         uw_flow_cache = {}
