@@ -47,7 +47,7 @@ import sys
 import threading
 from datetime import datetime, timedelta
 
-from config import (logger, CONFIG, DEMO_MODE, now_chicago,
+from config import (logger, CONFIG, CLAUDE_CONFIG, DEMO_MODE, now_chicago,
                     is_market_open, is_premarket, is_aftermarket,
                     get_market_status, get_min_volume, CHICAGO_TZ)
 from datetime import datetime
@@ -62,7 +62,7 @@ from database import (init_db, save_signal, get_signal_history,
                       get_active_buy_signals, check_retrigger_conditions,
                       save_retrigger, close_signal, update_outcomes,
                       get_stats)
-from telegram_alerts import (alert_signal, alert_retrigger, alert_take_profit,
+from telegram_alerts import (alert_signal, alert_manual, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message)
 from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
@@ -686,11 +686,12 @@ class StockScanner:
         if not queue:
             return
 
-        budget = CONFIG.get('manual_analysis_daily_usd', 
-                             CONFIG.get('manual_analysis_budget_usd', 2.00) / 22)
+        budget = CONFIG.get('manual_analysis_daily_usd',
+                             CLAUDE_CONFIG.get('daily_budget_usd', 2.27))
         if self.manual_cost_usd >= budget:
-            logger.warning(f"Manual analysis: dzienny limit ${budget:.2f} "
-                           f"przekroczony")
+            logger.warning(f"Manual analysis: dzienny limit ${budget:.2f} przekroczony")
+            from telegram_alerts import send_message
+            send_message(f"⚠️ Dzienny limit manualnych analiz ${budget:.2f} przekroczony.")
             return
 
         for ticker in queue:
@@ -725,7 +726,9 @@ class StockScanner:
                 self.manual_cost_usd += cost
 
                 save_signal(result, ticker_data)
-                self._send_alert(result, ticker_data)
+                # Manualna analiza — omijaj cooldown, wysylaj zawsze
+                alert_manual(result, ticker_data)
+                self.alert_count += 1
 
                 logger.info(f"Manualna analiza {ticker}: "
                             f"{result['verdict']} ({result['confidence']})")

@@ -221,7 +221,12 @@ def update_outcomes(polygon_api):
         for row in rows:
             try:
                 signal_time = datetime.fromisoformat(row['timestamp'])
-                elapsed_h   = (now - signal_time.replace(tzinfo=now.tzinfo)).total_seconds() / 3600
+                # Upewnij sie ze oba maja timezone
+                if signal_time.tzinfo is None:
+                    signal_time = signal_time.replace(tzinfo=now.tzinfo)
+                else:
+                    signal_time = signal_time.astimezone(now.tzinfo)
+                elapsed_h = (now - signal_time).total_seconds() / 3600
                 entry_price = row['price']
                 ticker      = row['ticker']
 
