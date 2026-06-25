@@ -305,6 +305,52 @@ def send_hourly_dashboard(stats, active_signals, top_today):
     return send_message(chr(10).join(lines))
 
 
+def send_presession_watchlist(top_tickers):
+    """
+    Alert 8:20 CST — lista tickerow do obserwacji przed otwarciem.
+    Wysylany automatycznie przez pre-market scan.
+    """
+    if not top_tickers:
+        return False
+
+    time_str = now_chicago().strftime('%H:%M CST')
+    dash = chr(8212)
+
+    lines = [
+        chr(128270) + ' <b>PRE-SESSION WATCHLIST</b> ' + dash + ' ' + time_str,
+        'Otwarcie za ~10 minut. Obserwuj:',
+        '',
+    ]
+
+    for i, t in enumerate(top_tickers[:5], 1):
+        ticker    = t.get('ticker', '')
+        score     = t.get('score', 0)
+        price     = t.get('price', 0)
+        gap       = t.get('gap_pct', 0)
+        reasons   = t.get('reasons', [])
+
+        # Najwazniejszy reason (pierwszy nie bedacy flaga)
+        top_reason = next(
+            (r for r in reasons if not r.startswith(chr(9888))),
+            reasons[0] if reasons else ''
+        )
+
+        gap_str = f' gap{gap:+.0f}%' if gap else ''
+        lines.append(
+            f"{i}. <b>{ticker}</b> ${price:.2f}{gap_str} "
+            f"[score {score}]"
+        )
+        if top_reason:
+            lines.append(f"   {chr(8594)} {top_reason}")
+
+    lines += [
+        '',
+        chr(9201) + ' Rynek otwiera sie o 8:30 CST',
+    ]
+
+    return send_message(chr(10).join(lines))
+
+
 def send_startup_message(demo_mode=True):
     time_str = now_chicago().strftime('%Y-%m-%d %H:%M CST')
     mode_str = chr(128300) + ' DEMO' if demo_mode else chr(128640) + ' LIVE'

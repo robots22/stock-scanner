@@ -87,6 +87,15 @@ CONFIG = {
     # Ticker musi mieć przynajmniej jeden sygnał TIER 1 lub 2
     'min_prefilter_score': 15,
 
+    # Dynamic Score Threshold — progi wg pory dnia
+    # Rano i Power Hour = nizszy prog (wiecej setupow)
+    # Midday = wyzszy prog (tylko najlepsze)
+    'score_threshold_open':       10,   # 8:30-10:00 CST (pierwsze 90 min)
+    'score_threshold_midday':     25,   # 10:00-14:00 CST
+    'score_threshold_power_hour': 12,   # 14:00-15:00 CST
+    'score_threshold_premarket':   8,   # 8:00-8:30 CST
+    'score_threshold_extended':   15,   # after-market
+
     # Cykl główny (Polygon + Alpaca + Finnhub) — co ile sekund
     'main_scan_interval': 300,       # 5 minut
 
@@ -237,6 +246,41 @@ def get_min_volume():
     if is_market_open():
         return CONFIG["min_volume"]
     return CONFIG["min_volume_extended"]
+
+
+def get_dynamic_threshold():
+    """
+    Dynamic Score Threshold — prog scoringu zalezy od pory dnia.
+    Rano i Power Hour = nizszy prog = wiecej setupow
+    Midday = wyzszy prog = tylko najlepsze sygnaly
+    """
+    n = now_chicago()
+
+    if n.weekday() >= 5:
+        return CONFIG['score_threshold_extended']
+
+    # Pre-market 8:00-8:30
+    if is_premarket():
+        pm_start = n.replace(hour=8, minute=0, second=0, microsecond=0)
+        if n >= pm_start:
+            return CONFIG['score_threshold_premarket']
+        return CONFIG['score_threshold_extended']
+
+    if not is_market_open():
+        return CONFIG['score_threshold_extended']
+
+    # Market hours
+    market_open  = n.replace(hour=8,  minute=30, second=0, microsecond=0)
+    power_start  = n.replace(hour=14, minute=0,  second=0, microsecond=0)
+    power_end    = n.replace(hour=15, minute=0,  second=0, microsecond=0)
+    open_end     = n.replace(hour=10, minute=0,  second=0, microsecond=0)
+
+    if market_open <= n < open_end:
+        return CONFIG['score_threshold_open']        # 8:30-10:00
+    elif power_start <= n < power_end:
+        return CONFIG['score_threshold_power_hour']  # 14:00-15:00
+    else:
+        return CONFIG['score_threshold_midday']      # 10:00-14:00
 
 # ==================== LOGOWANIE ====================
 os.makedirs(CONFIG['log_dir'], exist_ok=True)

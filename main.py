@@ -49,7 +49,8 @@ from datetime import datetime, timedelta
 
 from config import (logger, CONFIG, CLAUDE_CONFIG, DEMO_MODE, now_chicago,
                     is_market_open, is_premarket, is_aftermarket,
-                    get_market_status, get_min_volume, CHICAGO_TZ)
+                    get_market_status, get_min_volume, get_dynamic_threshold,
+                    CHICAGO_TZ)
 from datetime import datetime
 from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
@@ -64,7 +65,7 @@ from database import (init_db, save_signal, get_signal_history,
                       get_stats)
 from telegram_alerts import (alert_signal, alert_manual, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
-                              send_shutdown_message)
+                              send_shutdown_message, send_presession_watchlist)
 from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 from alpaca_trader import AlpacaPaperTrader
@@ -257,11 +258,12 @@ class StockScanner:
         # 4. Pre-filter → TOP 5 z options flow, news i technicznych
         top5 = get_top_tickers(
             universe,
-            dark_pool_flow=dark_pool_flow,
-            uw_flow_cache=uw_flow_cache,
-            news_cache=news_cache,
-            technical_cache=technical_cache,
-            top_n=CONFIG['max_tickers_for_claude'],
+            dark_pool_flow  = dark_pool_flow,
+            uw_flow_cache   = uw_flow_cache,
+            news_cache      = news_cache,
+            technical_cache = technical_cache,
+            top_n           = CONFIG['max_tickers_for_claude'],
+            signal_history_fn = get_signal_history,
         )
 
         if not top5:
@@ -742,6 +744,15 @@ class StockScanner:
         self.scan_count        += 1
         logger.info(f"Pre-market: przeanalizowano {len(results)} tickerow")
 
+        # Pre-session Watchlist o 8:20 CST
+        n = now_chicago()
+        watchlist_window = n.replace(hour=8, minute=20, second=0, microsecond=0)
+        watchlist_end    = n.replace(hour=8, minute=30, second=0, microsecond=0)
+        if watchlist_window <= n < watchlist_end and not getattr(self, '_watchlist_sent_today', False):
+            send_presession_watchlist(top3)
+            self._watchlist_sent_today = True
+            logger.info("Pre-session watchlist wyslany")
+
     def run_extended_scan(self):
         """
         Skan pre-market lub after-market — co 15 minut.
@@ -951,6 +962,10 @@ class StockScanner:
                         self.run_uw_scan()
                     except Exception as e:
                         logger.error(f"Błąd cyklu UW: {e}")
+
+                # Reset flagi watchlist o polnocy
+                if now_chicago().hour == 0:
+                    self._watchlist_sent_today = False
 
                 # Cykl główny (co 5 minut)
                 main_due = (self.last_main_scan is None or

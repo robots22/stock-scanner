@@ -15,7 +15,7 @@ Hierarchia scoring v4.0 - Universal, market-condition agnostic:
 Cel: rozroznianie tickerow - score musi byc rozny dla roznych setupow
 """
 
-from config import logger, CONFIG
+from config import logger, CONFIG, get_dynamic_threshold
 from datetime import datetime, timezone
 
 EXCLUDED_TYPES     = {'WARRANT', 'RIGHT', 'UNIT', 'FUND', 'SP'}
@@ -530,9 +530,34 @@ def rank_tickers(filtered_universe, dark_pool_flow=None, finnhub_cache=None,
     return scored
 
 
+def get_consecutive_boost(ticker, signal_history_fn):
+    """
+    Consecutive Boost — ticker ktory dostat BUY 2x z rzedu = bonus.
+    Ticker z AVOID 2x z rzedu = penalty.
+    """
+    if not signal_history_fn:
+        return 0, ''
+    try:
+        history = signal_history_fn(ticker, limit=3)
+        if not history or len(history) < 2:
+            return 0, ''
+
+        last_two = [h.get('verdict') for h in history[:2]]
+
+        if last_two == ['BUY', 'BUY']:
+            return 10, 'Consecutive BUY x2 (potwierdzony setup)'
+        elif last_two == ['AVOID', 'AVOID']:
+            return -10, 'Consecutive AVOID x2'
+        elif last_two[0] == 'BUY':
+            return 5, 'Poprzedni sygnał BUY'
+    except Exception:
+        pass
+    return 0, ''
+
+
 def get_top_tickers(universe, dark_pool_flow=None, finnhub_cache=None,
                     uw_flow_cache=None, news_cache=None, technical_cache=None,
-                    top_n=None, polygon_api=None):
+                    top_n=None, polygon_api=None, signal_history_fn=None):
     if top_n is None:
         top_n = CONFIG['max_tickers_for_claude']
 
@@ -550,15 +575,26 @@ def get_top_tickers(universe, dark_pool_flow=None, finnhub_cache=None,
         technical_cache = technical_cache,
     )
 
-    min_score = CONFIG.get('min_prefilter_score', 15)
+    min_score = get_dynamic_threshold()
+
+    # Zastosuj Consecutive Boost przed finalnym rankingiem
+    if signal_history_fn:
+        for t in ranked:
+            boost, reason = get_consecutive_boost(t['ticker'], signal_history_fn)
+            if boost != 0:
+                t['score']  += boost
+                if reason:
+                    t['reasons'].append(reason)
+        ranked.sort(key=lambda x: x['score'], reverse=True)
+
     top = [t for t in ranked[:top_n * 3] if t['score'] >= min_score][:top_n]
 
     if not top:
         # Fallback - zwroc top_n bez filtra score
         top = ranked[:top_n]
-        logger.info("Pre-filter: fallback (brak tickerow z min_score)")
+        logger.info(f"Pre-filter: fallback (brak tickerow z min_score {min_score})")
 
-    logger.info(f"Pre-filter TOP {len(top)}:")
+    logger.info(f"Pre-filter TOP {len(top)} [threshold={min_score}]:") 
     for t in top:
         gap_str = f" gap{t['gap_pct']:+.0f}%" if t.get('gap_pct') else ""
         logger.info(f"  {t['ticker']:6s} | score: {t['score']:3d} | "
