@@ -237,6 +237,66 @@ class PolygonAPI:
             'vwap':          round(float(day.get('vw', price)), 2),
         }
 
+    def get_float_and_gap(self, ticker):
+        """
+        Pobiera float (shares outstanding) i gap od poprzedniego zamkniecia.
+        
+        Float: /v3/reference/tickers/{ticker}
+        Gap:   /v2/aggs/ticker/{ticker}/prev
+        
+        Zwraca:
+          float_shares  -- ilosc akcji w obiegu (shares outstanding)
+          gap_pct       -- gap od poprzedniego zamkniecia (%)
+          prev_close    -- poprzednie zamkniecie
+        """
+        result = {
+            'float_shares': None,
+            'gap_pct':      0.0,
+            'prev_close':   0.0,
+        }
+
+        # Float z reference endpoint
+        try:
+            ref_data = self._get(
+                f'/v3/reference/tickers/{ticker}',
+                cache_ttl=3600,  # cache 1h - float sie nie zmienia czesto
+            )
+            if ref_data and ref_data.get('results'):
+                r = ref_data['results']
+                shares = r.get('weighted_shares_outstanding') or \
+                         r.get('share_class_shares_outstanding')
+                if shares:
+                    result['float_shares'] = int(shares)
+        except Exception as e:
+            logger.debug(f"Float error {ticker}: {e}")
+
+        # Gap z prev day endpoint
+        try:
+            prev_data = self._get(
+                f'/v2/aggs/ticker/{ticker}/prev',
+                cache_ttl=300,  # cache 5 min
+            )
+            if prev_data and prev_data.get('results'):
+                prev = prev_data['results'][0]
+                prev_close = float(prev.get('c', 0))
+                result['prev_close'] = prev_close
+
+                # Pobierz aktualna cene otwarcia
+                snap = self._get(
+                    f'/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}',
+                    cache_ttl=30,
+                )
+                if snap and snap.get('ticker'):
+                    day_open = snap['ticker'].get('day', {}).get('o', 0)
+                    if day_open and prev_close:
+                        result['gap_pct'] = round(
+                            (day_open - prev_close) / prev_close * 100, 2
+                        )
+        except Exception as e:
+            logger.debug(f"Gap error {ticker}: {e}")
+
+        return result
+
     # ==================== VOLUME RATIO 30 DNI ====================
 
     def get_avg_volume_30d(self, ticker):

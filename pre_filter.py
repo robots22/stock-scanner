@@ -204,6 +204,36 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
         score += 5
         reasons.append(f"Zmiana {change:+.1f}% (duzy ruch)")
 
+    # ---- FLOAT (0-15 pkt) ----
+    float_shares = ticker_data.get('float_shares')
+    if float_shares:
+        float_m = float_shares / 1_000_000  # w milionach
+        if float_m < 5:
+            score += 15
+            reasons.append(f"Float {float_m:.1f}M (ekstremalnie niski - high risk/reward)")
+        elif float_m < 15:
+            score += 10
+            reasons.append(f"Float {float_m:.1f}M (niski float)")
+        elif float_m < 50:
+            score += 5
+            reasons.append(f"Float {float_m:.1f}M (sredni float)")
+
+    # ---- GAP ANALYSIS (0-15 pkt) ----
+    gap_pct = ticker_data.get('gap_pct', 0)
+    if gap_pct:
+        if 5.0 <= gap_pct <= 30.0:
+            score += 15
+            reasons.append(f"Gap up {gap_pct:+.1f}% (idealny zakres)")
+        elif 30.0 < gap_pct <= 60.0:
+            score += 10
+            reasons.append(f"Gap up {gap_pct:+.1f}% (duzy gap)")
+        elif gap_pct > 60.0:
+            score += 5
+            reasons.append(f"Gap up {gap_pct:+.1f}% (ekstremalny - ryzyko fill)")
+        elif gap_pct < -5.0:
+            score -= 5
+            reasons.append(f"Gap down {gap_pct:+.1f}% (slaby opening)")
+
     return score, reasons
 
 

@@ -237,6 +237,24 @@ class StockScanner:
         if technical_cache:
             logger.info(f"Technical cache: {len(technical_cache)} tickerów z RSI/EMA")
 
+        # Pobierz float i gap dla TOP 20
+        float_gap_cache = {}
+        for t in universe_rsi:
+            ticker = t['ticker']
+            try:
+                fg = self.polygon.get_float_and_gap(ticker)
+                if fg.get('float_shares') or fg.get('gap_pct'):
+                    float_gap_cache[ticker] = fg
+                    # Dodaj do raw_data tickera
+                    t['float_shares'] = fg.get('float_shares')
+                    t['gap_pct']      = fg.get('gap_pct', 0)
+                    t['prev_close']   = fg.get('prev_close', 0)
+            except Exception:
+                pass
+
+        if float_gap_cache:
+            logger.info(f"Float/gap cache: {len(float_gap_cache)} tickerów")
+
         # 4. Pre-filter → TOP 5 z options flow, news i technicznych
         top5 = get_top_tickers(
             universe,
