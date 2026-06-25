@@ -67,7 +67,7 @@ def _build_buy_message(ticker, confidence_str, time_str, price, change_pct,
         '',
         chr(128203) + ' ' + reasons_line,
         '',
-        chr(129300) + ' ' + just_short,
+        chr(129302) + ' ' + just_short,
         '',
         chr(9888) + ' ' + (risk or ''),
     ]
@@ -116,7 +116,7 @@ def alert_signal(result, ticker_data):
             '',
             chr(128203) + ' ' + reasons_line,
             '',
-            chr(129300) + ' ' + just_short,
+            chr(129302) + ' ' + just_short,
         ]
         return send_message(chr(10).join(lines))
 
@@ -168,7 +168,7 @@ def alert_manual(result, ticker_data):
         '',
         chr(128203) + ' ' + reasons_line,
         '',
-        chr(129300) + ' ' + just_short,
+        chr(129302) + ' ' + just_short,
     ]
 
     if risk:
