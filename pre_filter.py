@@ -29,19 +29,40 @@ PREMIUM_NEWS_SOURCES = {
     'prnewswire', 'accesswire', 'benzinga', 'thestreet',
 }
 
-# Bullish keywords w newsach
-BULLISH_KEYWORDS = [
-    'fda approval', 'fda approved', 'breakthrough', 'contract', 'partnership',
-    'beat', 'beats', 'upgrade', 'raises guidance', 'grant', 'clearance',
-    'positive trial', 'positive data', 'positive results', 'acquisition',
-    'merger', 'license', 'awarded', 'wins', 'spacex', 'nasdaq compliance',
-    'regains compliance', 'listing restored',
+# Catalyst Quality Score — jakosc eventu decyduje o wadze
+CATALYST_HIGH = [
+    'fda approval', 'fda approved', 'fda grants', 'fda clears',
+    'breakthrough therapy', 'accelerated approval',
+    'acquisition', 'merger', 'takeover', 'buyout',
+    'going private', 'strategic review',
+    'spacex', 'nasa contract', 'dod contract', 'government contract',
+    'nasdaq compliance', 'listing restored', 'regains compliance',
 ]
 
-BEARISH_KEYWORDS = [
-    'downgrade', 'miss', 'misses', 'recall', 'investigation', 'fraud',
-    'lawsuit', 'bankruptcy', 'delisted', 'delisting', 'fails to', 'rejects',
-    'suspended', 'halt',
+CATALYST_MEDIUM = [
+    'partnership', 'collaboration', 'license agreement', 'licensing deal',
+    'contract awarded', 'contract won', 'awarded contract',
+    'positive trial', 'positive results', 'positive data', 'phase 3',
+    'earnings beat', 'beats estimates', 'raises guidance',
+    'upgrade', 'price target raised',
+    'breakthrough', 'clearance', 'approved',
+    'grant', 'raises', 'secures funding',
+]
+
+CATALYST_LOW = [
+    'conference', 'presentation', 'webinar', 'investor day',
+    'at the', 'joins', 'appoints', 'names',
+    'announces participation', 'to present',
+    'quarterly results', 'annual report',
+]
+
+CATALYST_NEGATIVE = [
+    'sec investigation', 'sec subpoena', 'class action', 'securities fraud',
+    'short seller', 'short-seller', 'fraud allegation',
+    'delisted', 'delisting', 'nasdaq deficiency',
+    'bankruptcy', 'chapter 11', 'going concern',
+    'recall', 'clinical hold', 'fda reject', 'complete response letter',
+    'downgrade', 'miss', 'misses estimates', 'fails to',
 ]
 
 
@@ -127,80 +148,95 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
     # ================================================================
 
     if news_data:
-        bullish_premium = bullish_regular = bearish_count = 0
-        freshest_bullish_age_h = 999  # najswiezszy bullish news (godziny)
+        best_catalyst   = None   # HIGH / MEDIUM / LOW / NEGATIVE
+        best_catalyst_age_h = 999
+        catalyst_counts = {'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'NEGATIVE': 0}
         now_utc = datetime.now(timezone.utc)
 
         for n in news_data:
-            title     = (n.get('title', '') or '').lower()
-            desc      = (n.get('description', '') or '').lower()
-            publisher = n.get('publisher', {})
-            source    = (publisher.get('name', '') or '').lower() \
-                        if isinstance(publisher, dict) else ''
-            insights  = n.get('insights', [])
+            title    = (n.get('title', '') or '').lower()
+            desc     = (n.get('description', '') or '').lower()
+            pub_utc  = n.get('published_utc', '')
+            insights = n.get('insights', [])
             sentiment = insights[0].get('sentiment', '') if insights else ''
-            pub_utc   = n.get('published_utc', '')
 
             # Wiek newsa
             news_age_h = 999
             if pub_utc:
                 try:
-                    pub_dt    = datetime.fromisoformat(pub_utc.replace('Z', '+00:00'))
+                    pub_dt = datetime.fromisoformat(pub_utc.replace('Z', '+00:00'))
                     news_age_h = (now_utc - pub_dt).total_seconds() / 3600
                 except Exception:
                     pass
 
-            is_bullish = (sentiment == 'positive') or \
-                         any(w in title or w in desc for w in BULLISH_KEYWORDS)
-            is_bearish = (sentiment == 'negative') or \
-                         any(w in title or w in desc for w in BEARISH_KEYWORDS)
-            is_premium = any(ps in source for ps in PREMIUM_NEWS_SOURCES)
+            # Catalyst Quality Score
+            catalyst = None
+            if any(w in title or w in desc for w in CATALYST_NEGATIVE) or \
+               sentiment == 'negative':
+                catalyst = 'NEGATIVE'
+            elif any(w in title or w in desc for w in CATALYST_HIGH):
+                catalyst = 'HIGH'
+            elif any(w in title or w in desc for w in CATALYST_MEDIUM) or \
+                 sentiment == 'positive':
+                catalyst = 'MEDIUM'
+            elif any(w in title or w in desc for w in CATALYST_LOW):
+                catalyst = 'LOW'
 
-            if is_bullish:
-                if is_premium:
-                    bullish_premium += 1
-                else:
-                    bullish_regular += 1
-                if news_age_h < freshest_bullish_age_h:
-                    freshest_bullish_age_h = news_age_h
-            elif is_bearish:
-                bearish_count += 1
+            if catalyst:
+                catalyst_counts[catalyst] += 1
+                # Zachowaj najlepszy swiezy katalizator
+                priority = {'HIGH': 4, 'MEDIUM': 3, 'LOW': 1, 'NEGATIVE': 0}
+                if catalyst != 'NEGATIVE':
+                    if best_catalyst is None or \
+                       priority.get(catalyst, 0) > priority.get(best_catalyst, 0) or \
+                       (catalyst == best_catalyst and news_age_h < best_catalyst_age_h):
+                        best_catalyst = catalyst
+                        best_catalyst_age_h = news_age_h
 
-        if bullish_premium >= 2:
-            score += 35
-            reasons.append(f"Silny bullish news x{bullish_premium} (premium)")
-        elif bullish_premium == 1:
-            score += 25
-            reasons.append("Bullish news (premium source)")
-        elif bullish_regular >= 2:
-            score += 18
-            reasons.append(f"Bullish news x{bullish_regular}")
-        elif bullish_regular == 1:
-            score += 12
-            reasons.append("Bullish news katalizator")
-        elif news_data and not bearish_count:
-            score += 3
+        # Score bazowy wg jakosci katalizatora
+        publisher = news_data[0].get('publisher', {}) if news_data else {}
+        source = (publisher.get('name', '') or '').lower() \
+                 if isinstance(publisher, dict) else ''
+        is_premium = any(ps in source for ps in PREMIUM_NEWS_SOURCES)
+        premium_mult = 1.4 if is_premium else 1.0
+
+        if catalyst_counts['HIGH'] > 0:
+            base = int(35 * premium_mult)
+            score += base
+            reasons.append(f"Catalyst HIGH x{catalyst_counts['HIGH']} "
+                           f"({'premium ' if is_premium else ''}{base}pkt)")
+        elif catalyst_counts['MEDIUM'] > 0:
+            base = int(18 * premium_mult)
+            score += base
+            reasons.append(f"Catalyst MEDIUM x{catalyst_counts['MEDIUM']} "
+                           f"({base}pkt)")
+        elif catalyst_counts['LOW'] > 0:
+            score += 4
+            reasons.append(f"News LOW quality ({catalyst_counts['LOW']})")
+        elif news_data:
+            score += 2
             reasons.append(f"News aktywnosc ({len(news_data)})")
 
-        # Timestamp bonus - swiezy bullish news
-        if freshest_bullish_age_h < 999:
-            if freshest_bullish_age_h <= 1:
+        # Timestamp bonus
+        if best_catalyst in ('HIGH', 'MEDIUM') and best_catalyst_age_h < 999:
+            if best_catalyst_age_h <= 1:
                 score += 20
-                reasons.append(f"NEWS SWIEZY ({freshest_bullish_age_h*60:.0f} min temu!)")
-            elif freshest_bullish_age_h <= 4:
+                reasons.append(f"NEWS SWIEZY ({best_catalyst_age_h*60:.0f} min temu!)")
+            elif best_catalyst_age_h <= 4:
                 score += 12
-                reasons.append(f"News swiezy ({freshest_bullish_age_h:.1f}h temu)")
-            elif freshest_bullish_age_h <= 12:
+                reasons.append(f"News swiezy ({best_catalyst_age_h:.1f}h temu)")
+            elif best_catalyst_age_h <= 12:
                 score += 6
-                reasons.append(f"News dzisiaj ({freshest_bullish_age_h:.0f}h temu)")
-            elif freshest_bullish_age_h <= 24:
+                reasons.append(f"News dzisiaj ({best_catalyst_age_h:.0f}h temu)")
+            elif best_catalyst_age_h <= 24:
                 score += 2
-                reasons.append(f"News wczoraj ({freshest_bullish_age_h:.0f}h temu)")
-            # Stary news (>24h) = brak bonusu
+                reasons.append(f"News wczoraj")
 
-        if bearish_count > 0:
-            flags.append(f"Bearish news x{bearish_count}")
-            score -= 5 * bearish_count
+        # Kary za negatywne
+        if catalyst_counts['NEGATIVE'] > 0:
+            penalty = catalyst_counts['NEGATIVE'] * 8
+            flags.append(f"Negative catalyst x{catalyst_counts['NEGATIVE']}")
+            score -= penalty
 
     if finnhub_data:
         earnings = finnhub_data.get('earnings')
