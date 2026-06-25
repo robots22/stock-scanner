@@ -19,7 +19,7 @@ from config import logger, CONFIG
 
 EXCLUDED_TYPES    = {'WARRANT', 'RIGHT', 'UNIT', 'FUND', 'SP'}
 EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
-MIN_PRICE_QUALITY = 1.00
+MIN_PRICE_QUALITY = 0.50
 MIN_VOLUME_SCORING = 50_000
 PREMIUM_NEWS_SOURCES = {
     'reuters', 'bloomberg', 'wsj', 'ft', 'cnbc', 'marketwatch',

@@ -120,8 +120,7 @@ CONFIG = {
     'log_file': 'scanner.log',
 
     # Ignoruj sygnały w pierwszych N minutach po otwarciu rynku
-    # Ceny small-cap są niereliable na początku sesji (wide spread, mała płynność)
-    'market_open_filter_minutes': 15,
+    'market_open_filter_minutes': 5,
 
     # ==================== EXTENDED HOURS ====================
     # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)

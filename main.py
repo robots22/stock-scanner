@@ -175,7 +175,7 @@ class StockScanner:
         try:
             # Pobierz tickery z unusual options activity (market-wide)
             unusual_tickers = self.uw.get_tickers_with_unusual_flow(
-                min_premium=50_000, limit=30
+                min_premium=20_000, limit=30
             )
             for t in unusual_tickers:
                 ticker = t['ticker']
@@ -584,6 +584,147 @@ class StockScanner:
 
     # ==================== EXTENDED HOURS ====================
 
+    def run_premarket_scan(self):
+        """
+        Pre-market scan 8:00-8:30 CST.
+        News-first — szuka katalizatorow przed otwarciem.
+        Logika: news + UW flow = gotowy setup na otwarcie.
+        """
+        logger.info("=== PRE-MARKET SCAN ===")
+
+        # Pobierz universe z nizszym progiem volumenu
+        universe = self.polygon.get_universe()
+        if not universe:
+            logger.info("Pre-market: brak danych z Polygon")
+            return
+
+        min_vol  = CONFIG.get('min_volume_extended', 10_000)
+        filtered = [t for t in universe if t.get('volume', 0) >= min_vol]
+
+        if not filtered:
+            logger.info(f"Pre-market: brak tickerow z vol >= {min_vol:,}")
+            return
+
+        logger.info(f"Pre-market: {len(filtered)} tickerow w universe")
+
+        # Pobierz newsy dla TOP 50 po volume
+        news_cache = {}
+        top_by_vol = sorted(filtered, key=lambda x: x.get('volume', 0), reverse=True)[:50]
+        for t in top_by_vol:
+            ticker = t['ticker']
+            try:
+                news = self.polygon.get_news(ticker, limit=3)
+                if news:
+                    news_cache[ticker] = news
+            except Exception:
+                pass
+
+        logger.info(f"Pre-market: {len(news_cache)} tickerow z newsami")
+
+        # UW unusual flow
+        uw_flow_cache = {}
+        try:
+            unusual = self.uw.get_tickers_with_unusual_flow(
+                min_premium=20_000, limit=30
+            )
+            for t in unusual:
+                ticker = t['ticker']
+                uw_flow_cache[ticker] = {
+                    'call_volume':    t.get('call_premium', 0),
+                    'put_volume':     t.get('put_premium', 0),
+                    'call_put_ratio': round(t.get('call_premium', 0) / max(t.get('put_premium', 1), 1), 2),
+                    'unusual':        True,
+                    'sentiment':      'bullish' if t.get('bullish') else 'bearish',
+                }
+            logger.info(f"Pre-market: {len(uw_flow_cache)} tickerow z UW flow")
+        except Exception as e:
+            logger.warning(f"Pre-market UW flow error: {e}")
+
+        # Dark pool
+        dark_pool = self.uw.get_dark_pool_flow()
+
+        # Finnhub earnings
+        finnhub_cache = {}
+        for t in filtered:
+            ticker = t['ticker']
+            earnings = self.fh.get_earnings_calendar(ticker)
+            insider  = self.fh.get_insider_transactions(ticker)
+            if earnings or insider:
+                finnhub_cache[ticker] = {'earnings': earnings, 'insider': insider}
+
+        # Pre-filter — bez limitu cenowego dla pre-market
+        # ticker z newsem lub UW flow moze byc ponizej $1
+        ranked = []
+        from pre_filter import rank_tickers
+        ranked = rank_tickers(
+            filtered,
+            dark_pool_flow=dark_pool,
+            uw_flow_cache=uw_flow_cache,
+            news_cache=news_cache,
+            finnhub_cache=finnhub_cache,
+        )
+
+        # Filtruj tylko tickery z jakims katalizatorem (score > 10)
+        min_score = 10
+        candidates = [t for t in ranked if t['score'] >= min_score]
+
+        if not candidates:
+            logger.info("Pre-market: brak tickerow z katalizatorem")
+            return
+
+        top3 = candidates[:3]
+        logger.info(f"Pre-market TOP {len(top3)} do analizy:")
+        for t in top3:
+            logger.info(f"  {t['ticker']:6s} | score: {t['score']:3d} | "
+                        f"${t['price']:.2f} | {' | '.join(t['reasons'][:2])}")
+
+        # Analiza Claude
+        results = self.analyst.analyze_batch(
+            top3,
+            polygon_api=self.polygon,
+            uw_api=self.uw,
+            db=self,
+        )
+
+        for result, ticker_data in zip(results, top3):
+            signal_id = save_signal(result, ticker_data, polygon_api=self.polygon)
+            if result.get('verdict') == 'BUY' and signal_id:
+                try:
+                    from database import get_connection
+                    conn = get_connection()
+                    c    = conn.cursor()
+                    c.execute(
+                        'SELECT stop_loss, take_profit, rr_ratio, risk_pct, reward_pct, sl_basis '
+                        'FROM signals WHERE id = ?', (signal_id,)
+                    )
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        result['stop_loss']   = row[0]
+                        result['take_profit'] = row[1]
+                        result['rr_ratio']    = row[2]
+                        result['risk_pct']    = row[3]
+                        result['reward_pct']  = row[4]
+                        result['sl_basis']    = row[5]
+                except Exception:
+                    pass
+            self._send_alert(result, ticker_data)
+
+            if result.get('verdict') == 'BUY' and self.trader.enabled:
+                try:
+                    self.trader.buy(
+                        ticker=result.get('ticker'),
+                        entry_price=ticker_data.get('price', 0),
+                        stop_loss=result.get('stop_loss'),
+                        take_profit=result.get('take_profit'),
+                    )
+                except Exception as e:
+                    logger.error(f"Pre-market Paper trader BUY error: {e}")
+
+        self.last_extended_scan = now_chicago()
+        self.scan_count        += 1
+        logger.info(f"Pre-market: przeanalizowano {len(results)} tickerow")
+
     def run_extended_scan(self):
         """
         Skan pre-market lub after-market — co 15 minut.
@@ -805,8 +946,9 @@ class StockScanner:
                     except Exception as e:
                         logger.error(f"Błąd cyklu głównego: {e}")
 
-                # Extended hours (pre/after-market) — co 15 minut
-                in_extended = (CONFIG['premarket_enabled'] and is_premarket()) or                               (CONFIG['aftermarket_enabled'] and is_aftermarket())
+                # Extended hours (pre/after-market)
+                in_extended = (CONFIG['premarket_enabled'] and is_premarket()) or \
+                               (CONFIG['aftermarket_enabled'] and is_aftermarket())
 
                 if in_extended:
                     ext_interval = (CONFIG['premarket_scan_interval']
@@ -817,9 +959,18 @@ class StockScanner:
                                >= ext_interval)
                     if ext_due:
                         try:
-                            self.run_extended_scan()
+                            # Pre-market 8:00-8:30 CST — dedykowany news-first scan
+                            if is_premarket():
+                                n = now_chicago()
+                                premarket_open = n.replace(hour=8, minute=0, second=0, microsecond=0)
+                                if n >= premarket_open:
+                                    self.run_premarket_scan()
+                                else:
+                                    self.run_extended_scan()
+                            else:
+                                self.run_extended_scan()
                         except Exception as e:
-                            logger.error(f"Błąd extended hours: {e}")
+                            logger.error(f"Blad extended hours: {e}")
 
                 # Manualna analiza z kolejki
                 if manual_queue:
