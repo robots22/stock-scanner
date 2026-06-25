@@ -16,6 +16,7 @@ Cel: rozroznianie tickerow - score musi byc rozny dla roznych setupow
 """
 
 from config import logger, CONFIG
+from datetime import datetime, timezone
 
 EXCLUDED_TYPES     = {'WARRANT', 'RIGHT', 'UNIT', 'FUND', 'SP'}
 EXCLUDED_SUFFIXES  = ('W', 'WS', 'WW', 'R', 'RT', 'U')
@@ -127,6 +128,8 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
 
     if news_data:
         bullish_premium = bullish_regular = bearish_count = 0
+        freshest_bullish_age_h = 999  # najswiezszy bullish news (godziny)
+        now_utc = datetime.now(timezone.utc)
 
         for n in news_data:
             title     = (n.get('title', '') or '').lower()
@@ -136,6 +139,16 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
                         if isinstance(publisher, dict) else ''
             insights  = n.get('insights', [])
             sentiment = insights[0].get('sentiment', '') if insights else ''
+            pub_utc   = n.get('published_utc', '')
+
+            # Wiek newsa
+            news_age_h = 999
+            if pub_utc:
+                try:
+                    pub_dt    = datetime.fromisoformat(pub_utc.replace('Z', '+00:00'))
+                    news_age_h = (now_utc - pub_dt).total_seconds() / 3600
+                except Exception:
+                    pass
 
             is_bullish = (sentiment == 'positive') or \
                          any(w in title or w in desc for w in BULLISH_KEYWORDS)
@@ -148,6 +161,8 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
                     bullish_premium += 1
                 else:
                     bullish_regular += 1
+                if news_age_h < freshest_bullish_age_h:
+                    freshest_bullish_age_h = news_age_h
             elif is_bearish:
                 bearish_count += 1
 
@@ -166,6 +181,22 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
         elif news_data and not bearish_count:
             score += 3
             reasons.append(f"News aktywnosc ({len(news_data)})")
+
+        # Timestamp bonus - swiezy bullish news
+        if freshest_bullish_age_h < 999:
+            if freshest_bullish_age_h <= 1:
+                score += 20
+                reasons.append(f"NEWS SWIEZY ({freshest_bullish_age_h*60:.0f} min temu!)")
+            elif freshest_bullish_age_h <= 4:
+                score += 12
+                reasons.append(f"News swiezy ({freshest_bullish_age_h:.1f}h temu)")
+            elif freshest_bullish_age_h <= 12:
+                score += 6
+                reasons.append(f"News dzisiaj ({freshest_bullish_age_h:.0f}h temu)")
+            elif freshest_bullish_age_h <= 24:
+                score += 2
+                reasons.append(f"News wczoraj ({freshest_bullish_age_h:.0f}h temu)")
+            # Stary news (>24h) = brak bonusu
 
         if bearish_count > 0:
             flags.append(f"Bearish news x{bearish_count}")
