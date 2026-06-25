@@ -328,6 +328,14 @@ def get_top_tickers(universe, dark_pool_flow=None, finnhub_cache=None,
 
     top = ranked[:top_n]
 
+    # Filtruj po minimalnym score
+    min_score = CONFIG.get('min_prefilter_score', 15)
+    top = [t for t in top if t['score'] >= min_score]
+
+    if not top:
+        logger.info(f"Pre-filter: brak tickerow z score >= {min_score}")
+        return []
+
     logger.info(f"Pre-filter: wyloniono TOP {len(top)} tickerow dla Claude'a")
     for t in top:
         logger.info(f"  {t['ticker']:6s} | score: {t['score']:3d} | "

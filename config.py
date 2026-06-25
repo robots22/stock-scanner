@@ -81,7 +81,11 @@ CONFIG = {
     'min_volume': 100_000,
 
     # Ile tickerów trafia do Claude AI na jeden cykl
-    'max_tickers_for_claude': 5,
+    'max_tickers_for_claude': 3,
+
+    # Minimalny score pre-filtra żeby ticker trafił do Claude
+    # Ticker musi mieć przynajmniej jeden sygnał TIER 1 lub 2
+    'min_prefilter_score': 15,
 
     # Cykl główny (Polygon + Alpaca + Finnhub) — co ile sekund
     'main_scan_interval': 300,       # 5 minut
