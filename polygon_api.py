@@ -175,20 +175,27 @@ class PolygonAPI:
                 volume_ratio = round(volume / max(prev_volume, 1), 2) \
                                if prev_volume > 0 else 1.0
 
+                prev_close   = round(float(prev.get('c', 0)), 2)
+                day_open     = round(float(day.get('o', price)), 2)
+                gap_pct      = round((day_open - prev_close) / prev_close * 100, 2) \
+                               if prev_close > 0 else 0.0
+
                 universe.append({
                     'ticker':         ticker,
                     'price':          round(float(price), 2),
                     'change_pct':     round(float(change_pct), 2),
                     'change_dollar':  round(float(item.get('todaysChange', 0)), 2),
                     'volume':         int(volume),
-                    'avg_volume_30d': int(prev_volume),  # placeholder
+                    'avg_volume_30d': int(prev_volume),
                     'volume_ratio':   volume_ratio,
                     'high':           round(float(day.get('h', price)), 2),
                     'low':            round(float(day.get('l', price)), 2),
-                    'open':           round(float(day.get('o', price)), 2),
+                    'open':           day_open,
                     'vwap':           round(float(day.get('vw', price)), 2),
-                    'earnings':       None,  # wypełnia Finnhub
-                    'insider':        None,  # wypełnia Finnhub
+                    'prev_close':     prev_close,
+                    'gap_pct':        gap_pct,
+                    'earnings':       None,
+                    'insider':        None,
                 })
 
             except Exception as e:

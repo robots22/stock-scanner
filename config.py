@@ -81,7 +81,7 @@ CONFIG = {
     'min_volume': 100_000,
 
     # Ile tickerów trafia do Claude AI na jeden cykl
-    'max_tickers_for_claude': 3,
+    'max_tickers_for_claude': 5,
 
     # Minimalny score pre-filtra żeby ticker trafił do Claude
     # Ticker musi mieć przynajmniej jeden sygnał TIER 1 lub 2
@@ -139,7 +139,7 @@ CONFIG = {
 
 # ==================== CLAUDE AI ====================
 CLAUDE_CONFIG = {
-    'model': 'claude-sonnet-4-6',
+    'model': 'claude-haiku-4-5-20251001',
     'max_tokens': 1000,
 
     # Ile ostatnich sygnałów dla danego tickera wysyłamy jako kontekst

@@ -1,96 +1,146 @@
 #!/usr/bin/env python3
 """
-STOCK SCANNER - PLIK 3: PRE-FILTER v3.0
+STOCK SCANNER - PLIK 3: PRE-FILTER v4.0
 Zapisz jako pre_filter.py w folderze stock-scanner
 
-Hierarchia scoring v3.0:
-TIER 1 - Smart Money (przed ruchem): UW flow, dark pool
-TIER 2 - Katalizator: news, earnings, insider
-TIER 3 - Techniczne: RSI, EMA, VWAP, HOD
-TIER 4 - Volume (zmniejszony)
+Hierarchia scoring v4.0 - Universal, market-condition agnostic:
+  TIER 0: Dyskwalifikatory
+  TIER 1: Smart Money (UW flow, dark pool) - przed ruchem
+  TIER 2: Fundamentalny katalizator (news, earnings, insider)
+  TIER 3: Float + Gap - struktura ruchu
+  TIER 4: Techniczne (VWAP, RSI, EMA, HOD)
+  TIER 5: Volume momentum
+  PENALTIES: Czerwone flagi
 
-Historia zmian:
-    v1.0 - pierwsza wersja
-    v2.0 - options flow i news jako liderzy
-    v3.0 - pelna hierarchia, RSI/EMA/VWAP/HOD, cena min $1, WW suffix
+Cel: rozroznianie tickerow - score musi byc rozny dla roznych setupow
 """
 
 from config import logger, CONFIG
 
-EXCLUDED_TYPES    = {'WARRANT', 'RIGHT', 'UNIT', 'FUND', 'SP'}
-EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
-MIN_PRICE_QUALITY = 0.50
+EXCLUDED_TYPES     = {'WARRANT', 'RIGHT', 'UNIT', 'FUND', 'SP'}
+EXCLUDED_SUFFIXES  = ('W', 'WS', 'WW', 'R', 'RT', 'U')
+MIN_PRICE_QUALITY  = 0.50
 MIN_VOLUME_SCORING = 50_000
+
 PREMIUM_NEWS_SOURCES = {
     'reuters', 'bloomberg', 'wsj', 'ft', 'cnbc', 'marketwatch',
     'sec.gov', 'businesswire', 'globenewswire', 'accessnewswire',
-    'prnewswire', 'accesswire'
+    'prnewswire', 'accesswire', 'benzinga', 'thestreet',
 }
+
+# Bullish keywords w newsach
+BULLISH_KEYWORDS = [
+    'fda approval', 'fda approved', 'breakthrough', 'contract', 'partnership',
+    'beat', 'beats', 'upgrade', 'raises guidance', 'grant', 'clearance',
+    'positive trial', 'positive data', 'positive results', 'acquisition',
+    'merger', 'license', 'awarded', 'wins', 'spacex', 'nasdaq compliance',
+    'regains compliance', 'listing restored',
+]
+
+BEARISH_KEYWORDS = [
+    'downgrade', 'miss', 'misses', 'recall', 'investigation', 'fraud',
+    'lawsuit', 'bankruptcy', 'delisted', 'delisting', 'fails to', 'rejects',
+    'suspended', 'halt',
+]
 
 
 def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
                  uw_flow_data=None, news_data=None, technical_data=None):
     score   = 0
     reasons = []
+    flags   = []  # czerwone flagi
 
+    ticker = ticker_data.get('ticker', '')
     price  = ticker_data.get('price', 0)
     vwap   = ticker_data.get('vwap', 0)
     high   = ticker_data.get('high', 0)
     low    = ticker_data.get('low', 0)
     change = ticker_data.get('change_pct', 0)
     ratio  = ticker_data.get('volume_ratio', 1.0)
+    gap    = ticker_data.get('gap_pct', 0.0)
+    fshares = ticker_data.get('float_shares')
 
-    # TIER 1: SMART MONEY (0-50 pkt)
+    # ================================================================
+    # TIER 1: SMART MONEY (max 50 pkt) - sygnaly PRZED ruchem
+    # ================================================================
+
     if uw_flow_data:
-        call_put = uw_flow_data.get('call_put_ratio', 1.0)
-        unusual  = uw_flow_data.get('unusual', False)
+        call_put       = float(uw_flow_data.get('call_put_ratio', 1.0) or 1.0)
+        unusual        = uw_flow_data.get('unusual', False)
+        bullish_prem   = float(uw_flow_data.get('bullish_premium', 0) or 0)
+        bearish_prem   = float(uw_flow_data.get('bearish_premium', 0) or 0)
+        call_ask_side  = int(uw_flow_data.get('call_ask_side', 0) or 0)
+        call_bid_side  = int(uw_flow_data.get('call_bid_side', 0) or 0)
 
-        if unusual and call_put >= 5.0:
+        # Kierunek z ask/bid
+        net_direction = call_ask_side - call_bid_side
+        is_bullish_uw = (bullish_prem > bearish_prem) or (net_direction > 0)
+
+        if unusual and call_put >= 5.0 and is_bullish_uw:
+            score += 40
+            reasons.append(f"UW unusual CALL flow {call_put:.1f}x (bullish confirmed)")
+        elif unusual and call_put >= 5.0:
+            score += 25
+            reasons.append(f"UW unusual flow {call_put:.1f}x (kierunek niepewny)")
+        elif unusual and call_put >= 2.0 and is_bullish_uw:
             score += 30
-            reasons.append(f"UW unusual flow {call_put:.1f}x (ekstremalny)")
+            reasons.append(f"UW unusual flow {call_put:.1f}x (bullish)")
         elif unusual and call_put >= 2.0:
-            score += 20
+            score += 18
             reasons.append(f"UW unusual flow {call_put:.1f}x")
         elif unusual:
-            score += 12
+            score += 10
             reasons.append("UW unusual flow (smart money aktywny)")
 
+        # Bearish UW = red flag
+        if unusual and call_put < 0.5:
+            flags.append("UW bearish PUT flow")
+            score -= 10
+
     if dark_pool_flow:
-        ticker_sym = ticker_data.get('ticker', '')
-        dp_trades  = [dp for dp in dark_pool_flow if dp.get('ticker') == ticker_sym]
+        dp_trades = [dp for dp in dark_pool_flow if dp.get('ticker') == ticker]
         if dp_trades:
             total_usd = sum(dp.get('size_usd', 0) for dp in dp_trades)
-            buy_usd   = sum(dp.get('size_usd', 0) for dp in dp_trades if dp.get('side') == 'BUY')
-            sell_usd  = sum(dp.get('size_usd', 0) for dp in dp_trades if dp.get('side') == 'SELL')
+            buy_usd   = sum(dp.get('size_usd', 0) for dp in dp_trades
+                           if dp.get('side') == 'BUY')
+            sell_usd  = sum(dp.get('size_usd', 0) for dp in dp_trades
+                           if dp.get('side') == 'SELL')
 
             if total_usd >= 1_000_000 and buy_usd > sell_usd:
                 score += 20
-                reasons.append(f"Dark pool BUY ${total_usd:,.0f}")
+                reasons.append(f"Dark pool BUY ${total_usd/1e6:.1f}M")
             elif total_usd >= 1_000_000:
-                score += 12
-                reasons.append(f"Dark pool ${total_usd:,.0f} (kierunek niepewny)")
+                score += 10
+                reasons.append(f"Dark pool ${total_usd/1e6:.1f}M (dir. niepewny)")
             elif total_usd >= 500_000:
-                score += 8
-                reasons.append(f"Dark pool ${total_usd:,.0f}")
+                score += 6
+                reasons.append(f"Dark pool ${total_usd/1e3:.0f}k")
 
-    # TIER 2: KATALIZATOR (0-30 pkt)
+            # Dark pool SELL = red flag
+            if sell_usd > buy_usd * 2 and total_usd >= 500_000:
+                flags.append("Dark pool SELL pressure")
+                score -= 8
+
+    # ================================================================
+    # TIER 2: FUNDAMENTALNY KATALIZATOR (max 35 pkt)
+    # ================================================================
+
     if news_data:
         bullish_premium = bullish_regular = bearish_count = 0
-        for n in news_data:
-            title     = n.get('title', '').lower()
-            publisher = n.get('publisher', {})
-            source    = publisher.get('name', '').lower() if isinstance(publisher, dict) else ''
-            sentiment = n.get('insights', [{}])[0].get('sentiment', '') if n.get('insights') else ''
 
-            is_bullish = sentiment == 'positive' or any(w in title for w in [
-                'fda approval', 'approved', 'breakthrough', 'contract', 'partnership',
-                'beat', 'upgrade', 'raises', 'grant', 'clearance', 'positive trial',
-                'positive data', 'acquisition', 'merger', 'license'
-            ])
-            is_bearish = sentiment == 'negative' or any(w in title for w in [
-                'downgrade', 'miss', 'recall', 'investigation', 'fraud',
-                'lawsuit', 'bankruptcy', 'delisted', 'fails'
-            ])
+        for n in news_data:
+            title     = (n.get('title', '') or '').lower()
+            desc      = (n.get('description', '') or '').lower()
+            publisher = n.get('publisher', {})
+            source    = (publisher.get('name', '') or '').lower() \
+                        if isinstance(publisher, dict) else ''
+            insights  = n.get('insights', [])
+            sentiment = insights[0].get('sentiment', '') if insights else ''
+
+            is_bullish = (sentiment == 'positive') or \
+                         any(w in title or w in desc for w in BULLISH_KEYWORDS)
+            is_bearish = (sentiment == 'negative') or \
+                         any(w in title or w in desc for w in BEARISH_KEYWORDS)
             is_premium = any(ps in source for ps in PREMIUM_NEWS_SOURCES)
 
             if is_bullish:
@@ -101,21 +151,25 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
             elif is_bearish:
                 bearish_count += 1
 
-        if bullish_premium >= 1:
+        if bullish_premium >= 2:
+            score += 35
+            reasons.append(f"Silny bullish news x{bullish_premium} (premium)")
+        elif bullish_premium == 1:
             score += 25
-            reasons.append("Bullish news (premium source) - katalizator")
+            reasons.append("Bullish news (premium source)")
         elif bullish_regular >= 2:
             score += 18
-            reasons.append(f"Bullish news: {bullish_regular} artykuly")
+            reasons.append(f"Bullish news x{bullish_regular}")
         elif bullish_regular == 1:
             score += 12
-            reasons.append("Bullish news: katalizator")
-        elif bearish_count > 0:
+            reasons.append("Bullish news katalizator")
+        elif news_data and not bearish_count:
             score += 3
-            reasons.append(f"Bearish news: {bearish_count}")
-        elif news_data:
-            score += 2
-            reasons.append(f"News aktywnosc: {len(news_data)} artykulow")
+            reasons.append(f"News aktywnosc ({len(news_data)})")
+
+        if bearish_count > 0:
+            flags.append(f"Bearish news x{bearish_count}")
+            score -= 5 * bearish_count
 
     if finnhub_data:
         earnings = finnhub_data.get('earnings')
@@ -124,118 +178,196 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
         if earnings:
             days = earnings.get('days_until', 99)
             prev = earnings.get('previous_surprise', '')
-            if days <= 1:
+            if days == 0:
+                score += 25
+                reasons.append(f"EARNINGS DZISIAJ ({prev})")
+            elif days <= 1:
                 score += 20
-                reasons.append(f"Earnings za {days} dni ({prev})")
+                reasons.append(f"Earnings jutro ({prev})")
             elif days <= 3:
                 score += 15
-                reasons.append(f"Earnings za {days} dni ({prev})")
+                reasons.append(f"Earnings za {days}d ({prev})")
             elif days <= 7:
                 score += 8
-                reasons.append(f"Earnings za {days} dni")
+                reasons.append(f"Earnings za {days}d")
 
         if insider and insider.get('type') == 'BUY':
             ival = insider.get('value_usd', 0)
-            if ival >= 50_000:
-                score += 5
-                reasons.append(f"Insider BUY ${ival:,}")
+            if ival >= 100_000:
+                score += 10
+                reasons.append(f"Insider BUY ${ival/1e3:.0f}k")
+            elif ival >= 50_000:
+                score += 6
+                reasons.append(f"Insider BUY ${ival/1e3:.0f}k")
 
-    # TIER 3: TECHNICZNE (0-30 pkt)
-    if 1.5 <= ratio <= 2.5 and 3.0 <= change <= 8.0:
-        score += 25
-        reasons.append(f"Sweet spot: vol {ratio:.1f}x + zmiana {change:+.1f}%")
-    elif 2.5 < ratio <= 4.0 and 8.0 < change <= 15.0:
-        score += 15
-        reasons.append(f"Momentum: vol {ratio:.1f}x + zmiana {change:+.1f}%")
-    elif 1.5 <= ratio <= 2.5:
-        score += 12
-        reasons.append(f"Volume {ratio:.1f}x (wczesny sygnal)")
-    elif 2.5 < ratio <= 4.0:
-        score += 8
-        reasons.append(f"Volume {ratio:.1f}x (wysoki)")
+    # ================================================================
+    # TIER 3: FLOAT + GAP - struktura ruchu (max 30 pkt)
+    # ================================================================
 
+    # Float - niski float = wieksze ruchy
+    if fshares:
+        float_m = fshares / 1_000_000
+        if float_m < 5:
+            score += 20
+            reasons.append(f"Float {float_m:.1f}M (ultra low)")
+        elif float_m < 15:
+            score += 15
+            reasons.append(f"Float {float_m:.1f}M (low float)")
+        elif float_m < 50:
+            score += 8
+            reasons.append(f"Float {float_m:.0f}M (mid float)")
+        # High float > 200M = slabszy ruch
+        elif float_m > 200:
+            score -= 3
+
+    # Gap analysis - jakos otwarcia
+    if gap != 0:
+        if 5.0 <= gap <= 25.0:
+            score += 15
+            reasons.append(f"Gap up {gap:+.1f}% (idealny)")
+        elif 25.0 < gap <= 50.0:
+            score += 10
+            reasons.append(f"Gap up {gap:+.1f}% (duzy)")
+        elif gap > 50.0:
+            score += 5
+            reasons.append(f"Gap up {gap:+.1f}% (ekstremalny - ryzyko fill)")
+        elif gap < -10.0:
+            flags.append(f"Gap down {gap:+.1f}%")
+            score -= 8
+
+    # ================================================================
+    # TIER 4: TECHNICZNE (max 25 pkt)
+    # ================================================================
+
+    # VWAP
     if vwap > 0 and price > 0:
         vwap_pct = ((price - vwap) / vwap) * 100
         if 0 < vwap_pct <= 2.0:
-            score += 10
-            reasons.append(f"VWAP reclaim ({vwap_pct:+.1f}% nad VWAP)")
-        elif vwap_pct > 2.0:
-            score += 5
+            score += 12
+            reasons.append(f"VWAP reclaim ({vwap_pct:+.1f}%)")
+        elif 2.0 < vwap_pct <= 5.0:
+            score += 8
             reasons.append(f"Powyzej VWAP ({vwap_pct:+.1f}%)")
-        elif -1.0 <= vwap_pct < 0:
+        elif vwap_pct > 5.0:
+            score += 4
+            reasons.append(f"Daleko nad VWAP ({vwap_pct:+.1f}%)")
+        elif -1.5 <= vwap_pct < 0:
             score += 3
             reasons.append(f"Blisko VWAP ({vwap_pct:+.1f}%)")
+        elif vwap_pct < -5.0:
+            flags.append(f"Ponizej VWAP ({vwap_pct:+.1f}%)")
+            score -= 5
 
+    # RSI i EMA
     if technical_data:
-        rsi  = technical_data.get('rsi')
-        ema9 = technical_data.get('ema9')
-        ema21= technical_data.get('ema21')
+        rsi   = technical_data.get('rsi')
+        ema9  = technical_data.get('ema9')
+        ema21 = technical_data.get('ema21')
 
         if rsi is not None:
-            if 40 <= rsi <= 65:
+            if 45 <= rsi <= 65:
                 score += 8
                 reasons.append(f"RSI {rsi:.0f} (sweet spot)")
-            elif 30 <= rsi < 40:
-                score += 4
+            elif 35 <= rsi < 45:
+                score += 5
+                reasons.append(f"RSI {rsi:.0f} (buduje momentum)")
+            elif rsi < 30:
+                score += 3
                 reasons.append(f"RSI {rsi:.0f} (oversold bounce?)")
+            elif 65 < rsi <= 75:
+                score += 2
+                reasons.append(f"RSI {rsi:.0f} (momentum)")
             elif rsi > 75:
+                flags.append(f"RSI {rsi:.0f} overbought")
                 score -= 8
-                reasons.append(f"RSI {rsi:.0f} (overbought - ryzyko reversal)")
 
         if ema9 and ema21:
-            if ema9 > ema21 * 1.002:
-                score += 7
-                reasons.append("EMA9 > EMA21 (momentum bullish)")
-            elif ema9 < ema21 * 0.998:
-                score -= 4
-                reasons.append("EMA9 < EMA21 (momentum bearish)")
+            if ema9 > ema21 * 1.003:
+                score += 8
+                reasons.append("EMA9 > EMA21 (trend bullish)")
+            elif ema9 > ema21:
+                score += 4
+                reasons.append("EMA9 > EMA21 (lekko bullish)")
+            elif ema9 < ema21 * 0.997:
+                flags.append("EMA9 < EMA21 bearish")
+                score -= 5
 
+    # HOD breakout
     if high > 0 and price > 0:
         hod_pct = ((price - high) / high) * 100
-        if hod_pct >= -1.0:
+        if hod_pct >= 0:
+            score += 8
+            reasons.append("HOD breakout!")
+        elif hod_pct >= -1.0:
             score += 5
-            reasons.append(f"HOD breakout ({hod_pct:+.1f}% od szczytu)")
+            reasons.append(f"Blisko HOD ({hod_pct:+.1f}%)")
 
-    # TIER 4: VOLUME LATE (0-8 pkt)
-    if ratio > 5.0:
+    # Range position
+    if high > low > 0 and price > 0:
+        day_range = high - low
+        if day_range > 0:
+            pos = (price - low) / day_range
+            if pos >= 0.85:
+                score += 4
+                reasons.append(f"Range {pos:.0%} (gorny zakres)")
+
+    # ================================================================
+    # TIER 5: VOLUME MOMENTUM (max 20 pkt)
+    # ================================================================
+
+    # Rozrozniamy wczesny vs pozny ruch
+    if ratio >= 10.0 and change >= 20.0:
+        # Extreme momentum - moze byc pump lub prawdziwy runner
+        score += 12
+        reasons.append(f"Extreme: vol {ratio:.0f}x + {change:+.0f}%")
+    elif ratio >= 5.0 and change >= 10.0:
+        score += 15
+        reasons.append(f"Strong momentum: vol {ratio:.1f}x + {change:+.1f}%")
+    elif 2.0 <= ratio < 5.0 and 5.0 <= change <= 20.0:
+        score += 20
+        reasons.append(f"Sweet spot: vol {ratio:.1f}x + {change:+.1f}%")
+    elif 1.5 <= ratio < 2.0 and 3.0 <= change <= 8.0:
+        score += 15
+        reasons.append(f"Wczesny ruch: vol {ratio:.1f}x + {change:+.1f}%")
+    elif 1.5 <= ratio < 5.0:
         score += 8
-        reasons.append(f"Volume {ratio:.1f}x (moze za pozno)")
-    if change > 15.0:
+        reasons.append(f"Volume {ratio:.1f}x (podwyzszony)")
+    elif ratio >= 5.0:
+        score += 6
+        reasons.append(f"Volume {ratio:.1f}x (high - moze pozno)")
+
+    # Zmiana ceny extra bonus
+    abs_chg = abs(change)
+    if 5.0 <= abs_chg <= 15.0 and change > 0:
         score += 5
-        reasons.append(f"Zmiana {change:+.1f}% (duzy ruch)")
+        reasons.append(f"Zmiana {change:+.1f}%")
+    elif abs_chg > 15.0 and change > 0:
+        score += 3
 
-    # ---- FLOAT (0-15 pkt) ----
-    float_shares = ticker_data.get('float_shares')
-    if float_shares:
-        float_m = float_shares / 1_000_000  # w milionach
-        if float_m < 5:
-            score += 15
-            reasons.append(f"Float {float_m:.1f}M (ekstremalnie niski - high risk/reward)")
-        elif float_m < 15:
-            score += 10
-            reasons.append(f"Float {float_m:.1f}M (niski float)")
-        elif float_m < 50:
-            score += 5
-            reasons.append(f"Float {float_m:.1f}M (sredni float)")
+    # ================================================================
+    # PENALTIES - czerwone flagi
+    # ================================================================
 
-    # ---- GAP ANALYSIS (0-15 pkt) ----
-    gap_pct = ticker_data.get('gap_pct', 0)
-    if gap_pct:
-        if 5.0 <= gap_pct <= 30.0:
-            score += 15
-            reasons.append(f"Gap up {gap_pct:+.1f}% (idealny zakres)")
-        elif 30.0 < gap_pct <= 60.0:
-            score += 10
-            reasons.append(f"Gap up {gap_pct:+.1f}% (duzy gap)")
-        elif gap_pct > 60.0:
-            score += 5
-            reasons.append(f"Gap up {gap_pct:+.1f}% (ekstremalny - ryzyko fill)")
-        elif gap_pct < -5.0:
-            score -= 5
-            reasons.append(f"Gap down {gap_pct:+.1f}% (slaby opening)")
+    # Cena groszowa (ale powyzej naszego minimum) - wieksze ryzyko
+    if price < 1.0:
+        score -= 5
+        flags.append(f"Cena groszowa ${price:.2f}")
+
+    # Bardzo wysoki ratio BEZ zmiany = podejrzane
+    if ratio > 10.0 and abs(change) < 2.0:
+        flags.append(f"Vol {ratio:.0f}x bez ruchu cenowego")
+        score -= 10
+
+    # Dodaj flagi do reasons
+    for flag in flags:
+        reasons.append(f"⚠️ {flag}")
 
     return score, reasons
 
+
+# ================================================================
+# FILTROWANIE BAZOWE
+# ================================================================
 
 def is_excluded_ticker(ticker_data, polygon_api=None):
     ticker = ticker_data.get('ticker', '').upper()
@@ -243,7 +375,7 @@ def is_excluded_ticker(ticker_data, polygon_api=None):
     volume = ticker_data.get('volume', 0)
 
     if price < MIN_PRICE_QUALITY:
-        return True, f"cena ${price:.2f} < $1.00"
+        return True, f"cena ${price:.2f} < ${MIN_PRICE_QUALITY}"
 
     if volume < MIN_VOLUME_SCORING:
         return True, f"volume {volume:,} < {MIN_VOLUME_SCORING:,}"
@@ -288,13 +420,12 @@ def apply_base_filters(universe, polygon_api=None):
 
         passed.append(ticker)
 
-    logger.info(f"Pre-filter: {len(universe)} -> {len(passed)} tickerow "
-                f"(odrzucono {rejected_count} po filtrach bazowych)")
+    logger.info(f"Pre-filter: {len(universe)} -> {len(passed)} "
+                f"(odrzucono {rejected_count})")
 
     if rejected_reasons:
-        top_reasons = sorted(rejected_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
-        logger.info(f"  Glowne powody odrzucenia: "
-                    f"{', '.join(f'{r}:{c}' for r,c in top_reasons)}")
+        top = sorted(rejected_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
+        logger.info(f"  Powody: {', '.join(f'{r}:{c}' for r,c in top)}")
 
     return passed
 
@@ -304,30 +435,27 @@ def rank_tickers(filtered_universe, dark_pool_flow=None, finnhub_cache=None,
     scored = []
 
     for ticker_data in filtered_universe:
-        ticker_symbol = ticker_data.get('ticker', '')
-
-        finnhub_data   = finnhub_cache.get(ticker_symbol) if finnhub_cache else None
-        uw_flow_data   = uw_flow_cache.get(ticker_symbol) if uw_flow_cache else None
-        news_data      = news_cache.get(ticker_symbol) if news_cache else None
-        technical_data = technical_cache.get(ticker_symbol) if technical_cache else None
+        sym = ticker_data.get('ticker', '')
 
         score, reasons = score_ticker(
             ticker_data,
-            dark_pool_flow=dark_pool_flow,
-            finnhub_data=finnhub_data,
-            uw_flow_data=uw_flow_data,
-            news_data=news_data,
-            technical_data=technical_data,
+            dark_pool_flow  = dark_pool_flow,
+            finnhub_data    = finnhub_cache.get(sym) if finnhub_cache else None,
+            uw_flow_data    = uw_flow_cache.get(sym) if uw_flow_cache else None,
+            news_data       = news_cache.get(sym) if news_cache else None,
+            technical_data  = technical_cache.get(sym) if technical_cache else None,
         )
 
         scored.append({
-            'ticker':       ticker_symbol,
+            'ticker':       sym,
             'score':        score,
             'reasons':      reasons,
             'price':        ticker_data.get('price', 0),
             'change_pct':   ticker_data.get('change_pct', 0),
             'volume':       ticker_data.get('volume', 0),
             'volume_ratio': ticker_data.get('volume_ratio', 1.0),
+            'gap_pct':      ticker_data.get('gap_pct', 0),
+            'float_shares': ticker_data.get('float_shares'),
             'raw_data':     ticker_data,
         })
 
@@ -342,35 +470,33 @@ def get_top_tickers(universe, dark_pool_flow=None, finnhub_cache=None,
         top_n = CONFIG['max_tickers_for_claude']
 
     filtered = apply_base_filters(universe, polygon_api)
-
     if not filtered:
         logger.warning("Pre-filter: brak tickerow po filtrach bazowych")
         return []
 
     ranked = rank_tickers(
         filtered,
-        dark_pool_flow=dark_pool_flow,
-        finnhub_cache=finnhub_cache,
-        uw_flow_cache=uw_flow_cache,
-        news_cache=news_cache,
-        technical_cache=technical_cache,
+        dark_pool_flow  = dark_pool_flow,
+        finnhub_cache   = finnhub_cache,
+        uw_flow_cache   = uw_flow_cache,
+        news_cache      = news_cache,
+        technical_cache = technical_cache,
     )
 
-    top = ranked[:top_n]
-
-    # Filtruj po minimalnym score
     min_score = CONFIG.get('min_prefilter_score', 15)
-    top = [t for t in top if t['score'] >= min_score]
+    top = [t for t in ranked[:top_n * 3] if t['score'] >= min_score][:top_n]
 
     if not top:
-        logger.info(f"Pre-filter: brak tickerow z score >= {min_score}")
-        return []
+        # Fallback - zwroc top_n bez filtra score
+        top = ranked[:top_n]
+        logger.info("Pre-filter: fallback (brak tickerow z min_score)")
 
-    logger.info(f"Pre-filter: wyloniono TOP {len(top)} tickerow dla Claude'a")
+    logger.info(f"Pre-filter TOP {len(top)}:")
     for t in top:
+        gap_str = f" gap{t['gap_pct']:+.0f}%" if t.get('gap_pct') else ""
         logger.info(f"  {t['ticker']:6s} | score: {t['score']:3d} | "
-                    f"${t['price']:.2f} | {t['change_pct']:+.1f}% | "
-                    f"vol {t['volume_ratio']:.1f}x")
+                    f"${t['price']:.2f} | {t['change_pct']:+.1f}%"
+                    f" | vol {t['volume_ratio']:.1f}x{gap_str}")
 
     return top
 
@@ -390,7 +516,7 @@ def uw_fast_track(dark_pool_flow, current_top_tickers):
         if ticker not in current_symbols and size >= 500_000 and side == 'BUY':
             fast_track.append({
                 'ticker':   ticker,
-                'reason':   f"UW dark pool ${size:,} — fast track",
+                'reason':   f"UW dark pool ${size:,} BUY — fast track",
                 'size_usd': size,
             })
             logger.info(f"UW Fast Track: {ticker} | ${size:,}")
@@ -399,4 +525,4 @@ def uw_fast_track(dark_pool_flow, current_top_tickers):
 
 
 if __name__ == "__main__":
-    print("Pre-filter v3.0 OK")
+    print("Pre-filter v4.0 OK")
