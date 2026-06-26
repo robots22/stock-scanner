@@ -301,10 +301,10 @@ class StockScanner:
             ticker  = result.get('ticker', '')
             verdict = result.get('verdict', 'WATCH')
 
-            # WATCH escalation — 2x WATCH z rzędu = eskaluj do BUY
+            # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
             if verdict == 'WATCH':
                 self._watch_count[ticker] = self._watch_count.get(ticker, 0) + 1
-                if self._watch_count[ticker] >= 2:
+                if self._watch_count[ticker] >= 3:
                     logger.info(f"WATCH escalation: {ticker} ({self._watch_count[ticker]}x WATCH) — eskalacja do BUY")
                     result['verdict']        = 'BUY'
                     result['confidence']     = 'SREDNIA'

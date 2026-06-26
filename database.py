@@ -93,7 +93,17 @@ def save_signal(result, ticker_data, polygon_api=None):
 
         monitoring_end = None
         if monitoring:
-            end_time = now_chicago() + timedelta(hours=2)
+            from config import is_market_open, CHICAGO_TZ
+            n = now_chicago()
+            # Monitoring do konca sesji lub max 2h
+            market_close = n.replace(hour=15, minute=0, second=0, microsecond=0)
+            two_hours    = n + timedelta(hours=2)
+            if is_market_open() and market_close > n:
+                # Podczas sesji: min(2h, koniec sesji)
+                end_time = min(two_hours, market_close)
+            else:
+                # Po godzinach: monitoring tylko 30 minut
+                end_time = n + timedelta(minutes=30)
             monitoring_end = end_time.isoformat()
 
         stop_loss = take_profit = rr_ratio = None
