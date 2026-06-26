@@ -115,7 +115,7 @@ CONFIG = {
 
     # Telegram
     'telegram_enabled': bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
-    'duplicate_alert_cooldown': 600,  # 10 minut między tymi samymi alertami
+    'duplicate_alert_cooldown': 300,  # 5 minut miedzy tymi samymi alertami
 
     # Baza danych
     'db_path':           'scanner.db',

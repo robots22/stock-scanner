@@ -302,9 +302,11 @@ class StockScanner:
             verdict = result.get('verdict', 'WATCH')
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
+            # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
             if verdict == 'WATCH':
                 self._watch_count[ticker] = self._watch_count.get(ticker, 0) + 1
-                if self._watch_count[ticker] >= 3:
+                if (self._watch_count[ticker] >= 3 and
+                        ticker_data.get('score', 0) >= 40):
                     logger.info(f"WATCH escalation: {ticker} ({self._watch_count[ticker]}x WATCH) — eskalacja do BUY")
                     result['verdict']        = 'BUY'
                     result['confidence']     = 'SREDNIA'
@@ -452,12 +454,37 @@ class StockScanner:
 
             try:
                 # Cooldown — nie re-analizuj tego samego tickera
-                # częściej niż co 5 minut
+                # czesciej niz co 15 minut po BUY sygnale
                 last_trigger = self.trigger_cooldown.get(ticker)
                 if last_trigger:
                     elapsed = (now_chicago() - last_trigger).total_seconds()
-                    if elapsed < 300:
+                    if elapsed < 900:  # 15 minut
                         continue
+
+                # Dodatkowy cooldown — nie re-analizuj w ciagu 15 min od BUY sygnalu
+                from database import get_connection
+                try:
+                    conn = get_connection()
+                    c    = conn.cursor()
+                    c.execute(
+                        'SELECT timestamp FROM signals WHERE ticker=? '
+                        'AND verdict="BUY" ORDER BY id DESC LIMIT 1',
+                        (ticker,)
+                    )
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        from datetime import datetime
+                        buy_time = datetime.fromisoformat(row[0])
+                        if buy_time.tzinfo is None:
+                            buy_time = buy_time.replace(tzinfo=now_chicago().tzinfo)
+                        else:
+                            buy_time = buy_time.astimezone(now_chicago().tzinfo)
+                        since_buy = (now_chicago() - buy_time).total_seconds()
+                        if since_buy < 900:  # 15 min po BUY
+                            continue
+                except Exception:
+                    pass
 
                 # Pobierz dane UW dla tickera (główne źródło monitoringu)
                 options_flow   = self.uw.get_options_flow(ticker)
