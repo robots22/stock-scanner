@@ -212,7 +212,7 @@ def update_outcomes(polygon_api):
             SELECT id, ticker, timestamp, price, verdict
             FROM signals
             WHERE (outcome_1h IS NULL OR outcome_4h IS NULL OR outcome_24h IS NULL)
-            AND timestamp > datetime('now', '-2 days')
+            AND timestamp > datetime('now', '-7 days')
             ORDER BY timestamp DESC
         ''')
 
@@ -241,6 +241,10 @@ def update_outcomes(polygon_api):
 
                 current_data  = polygon_api.get_ticker_details(ticker)
                 current_price = float(current_data.get('price', 0) or 0)
+
+                # Fallback na prev_close gdy rynek zamkniety
+                if current_price <= 0:
+                    current_price = float(current_data.get('prev_close', 0) or 0)
 
                 if current_price <= 0:
                     continue
