@@ -189,11 +189,11 @@ def parse_claude_response(response_text, ticker):
             elif 'AVOID' in val:
                 result['verdict'] = 'AVOID'
 
-        elif line.startswith('PEWNOŚĆ:'):
+        elif line.startswith('PEWNOSC:') or line.startswith('PEWNOŚĆ:'):
             val = line.split(':', 1)[1].strip().upper()
             if 'WYSOKA' in val or 'HIGH' in val:
                 result['confidence'] = 'WYSOKA'
-            elif 'ŚREDNIA' in val or 'MEDIUM' in val:
+            elif 'SREDNIA' in val or 'ŚREDNIA' in val or 'MEDIUM' in val:
                 result['confidence'] = 'ŚREDNIA'
             elif 'NISKA' in val or 'LOW' in val:
                 result['confidence'] = 'NISKA'
