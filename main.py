@@ -65,7 +65,8 @@ from database import (init_db, save_signal, get_signal_history,
                       get_stats)
 from telegram_alerts import (alert_signal, alert_manual, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
-                              send_shutdown_message, send_presession_watchlist)
+                              send_shutdown_message, send_presession_watchlist,
+                              send_afterhours_catalyst)
 from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 from alpaca_trader import AlpacaPaperTrader
@@ -755,6 +756,101 @@ class StockScanner:
             self._watchlist_sent_today = True
             logger.info("Pre-session watchlist wyslany")
 
+    def run_afterhours_catalyst_scan(self):
+        """
+        After-hours catalyst scan 15:00-20:00 CST.
+        Szuka Catalyst HIGH/MEDIUM po zamknieciu rynku.
+        NIE wydaje BUY — informuje o potencjalnym setupie na jutro.
+        """
+        logger.info("=== AFTER-HOURS CATALYST SCAN ===")
+
+        from pre_filter import CATALYST_HIGH, CATALYST_MEDIUM
+        from datetime import datetime, timezone, timedelta
+
+        # Market-wide news z ostatnich 2h
+        try:
+            news_cache = self.polygon.get_recent_news_tickers(hours=2, limit=100)
+        except Exception as e:
+            logger.warning(f"AH news scan error: {e}")
+            return
+
+        if not news_cache:
+            logger.info("After-hours: brak swiezych newsow")
+            return
+
+        now_utc   = datetime.now(timezone.utc)
+        found     = 0
+        alerted   = getattr(self, '_ah_alerted_today', set())
+
+        for ticker, articles in news_cache.items():
+            if ticker in alerted:
+                continue
+
+            for article in articles:
+                title    = (article.get('title', '') or '').lower()
+                desc     = (article.get('description', '') or '').lower()
+                pub_utc  = article.get('published_utc', '')
+                publisher = article.get('publisher', {})
+                source   = (publisher.get('name', '') or '') if isinstance(publisher, dict) else ''
+
+                # Wiek newsa
+                age_h = 999
+                if pub_utc:
+                    try:
+                        pub_dt = datetime.fromisoformat(pub_utc.replace('Z', '+00:00'))
+                        age_h  = (now_utc - pub_dt).total_seconds() / 3600
+                    except Exception:
+                        pass
+
+                if age_h > 2:
+                    continue
+
+                # Sprawdz catalyst quality
+                catalyst = None
+                if any(w in title or w in desc for w in CATALYST_HIGH):
+                    catalyst = 'HIGH'
+                elif any(w in title or w in desc for w in CATALYST_MEDIUM):
+                    catalyst = 'MEDIUM'
+
+                if not catalyst:
+                    continue
+
+                # Pobierz cene
+                try:
+                    td = self.polygon.get_ticker_details(ticker)
+                    price = td.get('price', 0) or td.get('prev_close', 0)
+                except Exception:
+                    price = 0
+
+                if price <= 0 or price > CONFIG['max_price']:
+                    continue
+
+                logger.info(f"AH Catalyst {catalyst}: {ticker} | {article.get('title', '')[:60]}")
+
+                send_afterhours_catalyst(
+                    ticker       = ticker,
+                    catalyst_type = catalyst,
+                    title        = article.get('title', ''),
+                    source       = source,
+                    age_h        = age_h,
+                    price        = price,
+                )
+
+                alerted.add(ticker)
+                found += 1
+                break  # jeden alert per ticker
+
+        self._ah_alerted_today = alerted
+        if found:
+            logger.info(f"After-hours: wyslano {found} alertow katalitycznych")
+        else:
+            logger.info("After-hours: brak nowych katalizatorow")
+
+        # Reset flagi o polnocy
+        n = now_chicago()
+        if n.hour == 0:
+            self._ah_alerted_today = set()
+
     def run_extended_scan(self):
         """
         Skan pre-market lub after-market — co 15 minut.
@@ -993,12 +1089,20 @@ class StockScanner:
                                >= ext_interval)
                     if ext_due:
                         try:
-                            # Pre-market 8:00-8:30 CST — dedykowany news-first scan
+                            # Pre-market 8:00-8:30 CST
                             if is_premarket():
                                 n = now_chicago()
                                 premarket_open = n.replace(hour=8, minute=0, second=0, microsecond=0)
                                 if n >= premarket_open:
                                     self.run_premarket_scan()
+                                else:
+                                    self.run_extended_scan()
+                            # After-hours 15:00-20:00 CST
+                            elif is_aftermarket():
+                                n = now_chicago()
+                                ah_end = n.replace(hour=20, minute=0, second=0, microsecond=0)
+                                if n < ah_end:
+                                    self.run_afterhours_catalyst_scan()
                                 else:
                                     self.run_extended_scan()
                             else:

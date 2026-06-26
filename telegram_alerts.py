@@ -4,7 +4,7 @@ STOCK SCANNER - PLIK 6: TELEGRAM ALERTY
 """
 
 import requests
-from config import (logger, CONFIG, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+from config import (logger, CONFIG, TELEGRAM_BOT_TOKEN,
                     TELEGRAM_CHAT_IDS, now_chicago)
 
 
@@ -46,13 +46,13 @@ def _build_buy_message(ticker, confidence_str, time_str, price, change_pct,
     if stop_loss and take_profit and risk_pct and reward_pct:
         sl_line = chr(128721) + ' STOP LOSS:   <b>$' + '{:.2f}'.format(stop_loss) + '</b> (-' + '{:.1f}'.format(risk_pct) + '%) [' + basis_label + ']'
         tp_line = chr(127919) + ' TAKE PROFIT: <b>$' + '{:.2f}'.format(take_profit) + '</b> (+' + '{:.1f}'.format(reward_pct) + '%)'
-        rr_line = chr(9878) + ' R/R:         ' + '{:.1f}'.format(rr_ratio or 2.0) + ':1'
+        rr_line = chr(9878) + chr(9878) + ' R/R:         ' + '{:.1f}'.format(rr_ratio or 2.0) + ':1'
     else:
         sl_line = chr(128721) + ' STOP LOSS:   <b>$' + '{:.2f}'.format(price * 0.96) + '</b> (-4%) [4%]'
         tp_line = chr(127919) + ' TAKE PROFIT: <b>$' + '{:.2f}'.format(price * 1.08) + '</b> (+8%)'
-        rr_line = chr(9878) + ' R/R:         2.0:1'
+        rr_line = chr(9878) + chr(9878) + ' R/R:         2.0:1'
 
-    just_short = '. '.join(just.split('. ')[:2]) + '.' if just else ''
+    just_short   = '. '.join(just.split('. ')[:2]) + '.' if just else ''
     reasons_line = ' | '.join((reasons or [])[:2]) or '-'
 
     lines = [
@@ -87,7 +87,12 @@ def alert_signal(result, ticker_data):
     volume_ratio = ticker_data.get('volume_ratio', 1.0)
     reasons      = ticker_data.get('reasons', [])
 
-    confidence_str = {'WYSOKA': chr(11088)*3, 'SREDNIA': chr(11088)*2, 'NISKA': chr(11088)}.get(confidence, chr(11088))
+    confidence_str = {
+        'WYSOKA':  chr(11088)*3,
+        'SREDNIA': chr(11088)*2,
+        'SREDNIA': chr(11088)*2,
+        'NISKA':   chr(11088),
+    }.get(confidence, chr(11088))
     time_str = now_chicago().strftime('%H:%M CST')
 
     stop_loss   = result.get('stop_loss')
@@ -138,11 +143,11 @@ def alert_manual(result, ticker_data):
     volume_ratio = ticker_data.get('volume_ratio', 1.0)
     reasons      = ticker_data.get('reasons', [])
 
-    icon = {'BUY': chr(128994), 'WATCH': chr(128993), 'AVOID': chr(128308)}.get(verdict, chr(9898))
+    icon           = {'BUY': chr(128994), 'WATCH': chr(128993), 'AVOID': chr(128308)}.get(verdict, chr(9898))
     confidence_str = {'WYSOKA': chr(11088)*3, 'SREDNIA': chr(11088)*2, 'NISKA': chr(11088)}.get(confidence, chr(11088))
-    time_str   = now_chicago().strftime('%H:%M CST')
-    just_short = '. '.join(just.split('. ')[:2]) + '.' if just else '-'
-    reasons_line = ' | '.join((reasons or [])[:2]) or '-'
+    time_str       = now_chicago().strftime('%H:%M CST')
+    just_short     = '. '.join(just.split('. ')[:2]) + '.' if just else '-'
+    reasons_line   = ' | '.join((reasons or [])[:2]) or '-'
 
     stop_loss   = result.get('stop_loss')
     take_profit = result.get('take_profit')
@@ -195,8 +200,8 @@ def alert_retrigger(ticker, trigger, details, old_verdict, new_verdict,
     dash     = chr(8212)
 
     if trigger == 'STOP_LOSS' or (old_verdict == 'BUY' and new_verdict == 'AVOID'):
-        result_str     = 'ZYSK +' + '{:.1f}'.format(price_change) + '%' if price_change > 0 else 'STRATA ' + '{:.1f}'.format(price_change) + '%'
-        trigger_emoji  = chr(128721) if trigger == 'STOP_LOSS' else chr(128308)
+        result_str    = 'ZYSK +' + '{:.1f}'.format(price_change) + '%' if price_change > 0 else 'STRATA ' + '{:.1f}'.format(price_change) + '%'
+        trigger_emoji = chr(128721) if trigger == 'STOP_LOSS' else chr(128308)
         lines = [
             trigger_emoji + ' <b>SELL ' + dash + ' ' + ticker + '</b>',
             chr(9200) + ' ' + time_str,
@@ -231,10 +236,10 @@ def alert_retrigger(ticker, trigger, details, old_verdict, new_verdict,
             'OPTIONS_BEARISH':  chr(128202),
             'UW_ACTIVITY_GONE': chr(128123),
         }
-        icon    = trigger_icons.get(trigger, chr(9889))
-        verdict_icon = {'BUY': chr(128994), 'WATCH': chr(128993), 'AVOID': chr(128308)}
-        old_icon = verdict_icon.get(old_verdict, chr(9898))
-        new_icon = verdict_icon.get(new_verdict, chr(9898)) if new_verdict else chr(128260)
+        icon     = trigger_icons.get(trigger, chr(9889))
+        v_icon   = {'BUY': chr(128994), 'WATCH': chr(128993), 'AVOID': chr(128308)}
+        old_icon = v_icon.get(old_verdict, chr(9898))
+        new_icon = v_icon.get(new_verdict, chr(9898)) if new_verdict else chr(128260)
 
         lines = [
             icon + ' <b>' + ticker + ' ' + dash + ' RE-ANALIZA</b>',
@@ -262,6 +267,68 @@ def alert_take_profit(ticker, entry_price, current_price, gain_pct):
         '',
         'Rozwaz realizacje zysku.',
     ]
+    return send_message(chr(10).join(lines))
+
+
+def send_afterhours_catalyst(ticker, catalyst_type, title, source, age_h, price, gap_pct=None):
+    """
+    Alert after-hours - catalyst HIGH/MEDIUM wykryty po zamknieciu rynku.
+    Informuje tradera o potencjalnym setupie na jutro.
+    """
+    time_str = now_chicago().strftime('%H:%M CST')
+    dash     = chr(8212)
+    gap_str  = ' | Gap: ' + '{:+.1f}'.format(gap_pct) + '%' if gap_pct else ''
+    age_str  = '{:.0f} min temu'.format(age_h * 60) if age_h < 1 else '{:.1f}h temu'.format(age_h)
+
+    if catalyst_type == 'HIGH':
+        cat_emoji = chr(128308) + chr(128308)
+    else:
+        cat_emoji = chr(128993)
+
+    lines = [
+        cat_emoji + ' <b>AFTER-HOURS CATALYST ' + dash + ' ' + ticker + '</b>',
+        chr(9200) + ' ' + time_str + ' | ' + age_str,
+        '',
+        chr(128176) + ' $' + '{:.2f}'.format(price) + gap_str,
+        chr(128203) + ' ' + title[:120],
+        chr(128240) + ' ' + source,
+        '',
+        chr(128270) + ' <b>Obserwuj jutro na otwarciu!</b>',
+        'Catalyst ' + catalyst_type + ' po godzinach = potencjalny gap up.',
+    ]
+    return send_message(chr(10).join(lines))
+
+
+def send_presession_watchlist(top_tickers):
+    """Alert 8:20 CST - lista tickerow do obserwacji przed otwarciem."""
+    if not top_tickers:
+        return False
+
+    time_str = now_chicago().strftime('%H:%M CST')
+    dash     = chr(8212)
+
+    lines = [
+        chr(128270) + ' <b>PRE-SESSION WATCHLIST</b> ' + dash + ' ' + time_str,
+        'Otwarcie za ~10 minut. Obserwuj:',
+        '',
+    ]
+
+    for i, t in enumerate(top_tickers[:5], 1):
+        ticker     = t.get('ticker', '')
+        score      = t.get('score', 0)
+        price      = t.get('price', 0)
+        gap        = t.get('gap_pct', 0)
+        reasons    = t.get('reasons', [])
+        top_reason = next(
+            (r for r in reasons if not r.startswith(chr(9888))),
+            reasons[0] if reasons else ''
+        )
+        gap_str = ' gap' + '{:+.0f}'.format(gap) + '%' if gap else ''
+        lines.append(str(i) + '. <b>' + ticker + '</b> $' + '{:.2f}'.format(price) + gap_str + ' [score ' + str(score) + ']')
+        if top_reason:
+            lines.append('   ' + chr(8594) + ' ' + top_reason)
+
+    lines += ['', chr(9201) + ' Rynek otwiera sie o 8:30 CST']
     return send_message(chr(10).join(lines))
 
 
@@ -305,52 +372,6 @@ def send_hourly_dashboard(stats, active_signals, top_today):
     return send_message(chr(10).join(lines))
 
 
-def send_presession_watchlist(top_tickers):
-    """
-    Alert 8:20 CST — lista tickerow do obserwacji przed otwarciem.
-    Wysylany automatycznie przez pre-market scan.
-    """
-    if not top_tickers:
-        return False
-
-    time_str = now_chicago().strftime('%H:%M CST')
-    dash = chr(8212)
-
-    lines = [
-        chr(128270) + ' <b>PRE-SESSION WATCHLIST</b> ' + dash + ' ' + time_str,
-        'Otwarcie za ~10 minut. Obserwuj:',
-        '',
-    ]
-
-    for i, t in enumerate(top_tickers[:5], 1):
-        ticker    = t.get('ticker', '')
-        score     = t.get('score', 0)
-        price     = t.get('price', 0)
-        gap       = t.get('gap_pct', 0)
-        reasons   = t.get('reasons', [])
-
-        # Najwazniejszy reason (pierwszy nie bedacy flaga)
-        top_reason = next(
-            (r for r in reasons if not r.startswith(chr(9888))),
-            reasons[0] if reasons else ''
-        )
-
-        gap_str = f' gap{gap:+.0f}%' if gap else ''
-        lines.append(
-            f"{i}. <b>{ticker}</b> ${price:.2f}{gap_str} "
-            f"[score {score}]"
-        )
-        if top_reason:
-            lines.append(f"   {chr(8594)} {top_reason}")
-
-    lines += [
-        '',
-        chr(9201) + ' Rynek otwiera sie o 8:30 CST',
-    ]
-
-    return send_message(chr(10).join(lines))
-
-
 def send_startup_message(demo_mode=True):
     time_str = now_chicago().strftime('%Y-%m-%d %H:%M CST')
     mode_str = chr(128300) + ' DEMO' if demo_mode else chr(128640) + ' LIVE'
@@ -363,7 +384,7 @@ def send_startup_message(demo_mode=True):
         '  ' + chr(8226) + ' Cena: $0.01 ' + chr(8212) + ' $15.00',
         '  ' + chr(8226) + ' Min wolumen: 100,000',
         '  ' + chr(8226) + ' Cykl: co 5 min (UW: co 1 min)',
-        '  ' + chr(8226) + ' TOP 3 tickerow ' + chr(8594) + ' Claude AI',
+        '  ' + chr(8226) + ' TOP 5 tickerow ' + chr(8594) + ' Claude AI',
     ]
     return send_message(chr(10).join(lines))
 
