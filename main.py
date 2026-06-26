@@ -607,24 +607,26 @@ class StockScanner:
         """
         Pre-market scan 8:00-8:30 CST.
         News-first — szuka katalizatorow przed otwarciem.
-        Logika: news + UW flow = gotowy setup na otwarcie.
+        Uzywa nizszego progu volume i market-wide news scan.
         """
         logger.info("=== PRE-MARKET SCAN ===")
 
-        # Pobierz universe z nizszym progiem volumenu
-        universe = self.polygon.get_universe()
+        # Pobierz universe — pre-market uzywa danych z poprzedniej sesji
+        # volume z poprzedniego dnia (nie dzisiejsze pre-market)
+        universe = self.polygon.get_universe(
+            min_volume=CONFIG.get('min_volume_extended', 10_000)
+        )
+
+        if not universe:
+            # Fallback — pobierz ze snapshotu bez filtru volume
+            logger.info("Pre-market: brak danych volume, probuje bez filtru")
+            universe = self.polygon.get_universe(min_volume=0)
+
         if not universe:
             logger.info("Pre-market: brak danych z Polygon")
             return
 
-        min_vol  = CONFIG.get('min_volume_extended', 10_000)
-        filtered = [t for t in universe if t.get('volume', 0) >= min_vol]
-
-        if not filtered:
-            logger.info(f"Pre-market: brak tickerow z vol >= {min_vol:,}")
-            return
-
-        logger.info(f"Pre-market: {len(filtered)} tickerow w universe")
+        logger.info(f"Pre-market: {len(universe)} tickerow w universe")
 
         # News cache — market-wide scan ostatnie 4h (szersze okno pre-market)
         news_cache = {}

@@ -134,13 +134,15 @@ class PolygonAPI:
 
     # ==================== UNIVERSE TICKERÓW ====================
 
-    def get_universe(self):
+    def get_universe(self, min_volume=None):
         """
         Zwraca listę wszystkich aktywnych tickerów z danymi rynkowymi.
-        Interfejs identyczny jak MockPolygon.get_universe().
+        min_volume: override dla minimalnego wolumenu (None = z CONFIG)
 
         Endpoint: GET /v2/snapshot/locale/us/markets/stocks/tickers
         """
+        vol_threshold = min_volume if min_volume is not None else CONFIG['min_volume']
+
         data = self._get(
             '/v2/snapshot/locale/us/markets/stocks/tickers',
             cache_ttl=300,  # cache 5 minut (cykl główny)
@@ -161,10 +163,10 @@ class PolygonAPI:
                 price  = day.get('c', 0) or prev.get('c', 0)
                 volume = day.get('v', 0)
 
-                # Filtruj już na tym etapie
+                # Filtruj
                 if not (CONFIG['min_price'] <= price <= CONFIG['max_price']):
                     continue
-                if volume < CONFIG['min_volume']:
+                if volume < vol_threshold:
                     continue
 
                 change_pct = item.get('todaysChangePerc', 0) or 0
