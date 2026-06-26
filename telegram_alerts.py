@@ -194,6 +194,7 @@ def alert_retrigger(ticker, trigger, details, old_verdict, new_verdict,
         'DARKPOOL_SELL':    'Dark pool SELL',
         'OPTIONS_BEARISH':  'Options flow bearish',
         'UW_ACTIVITY_GONE': 'Aktywnosc UW zniknela',
+        'TIME_EXIT':        'Time-based exit (90 min midday)',
     }
     label    = trigger_labels.get(trigger, trigger)
     time_str = now_chicago().strftime('%H:%M CST')

@@ -126,6 +126,9 @@ class StockScanner:
         # Extended hours
         self.last_extended_scan = None
 
+        # WATCH escalation tracker {ticker: count}
+        self._watch_count = {}
+
 
 
         # Kolejka manualnych analiz (z Telegram /analyze TICKER)
@@ -295,6 +298,26 @@ class StockScanner:
 
         # 6. Zapisz sygnały i wyślij alerty
         for result, ticker_data in zip(results, top5):
+            ticker  = result.get('ticker', '')
+            verdict = result.get('verdict', 'WATCH')
+
+            # WATCH escalation — 2x WATCH z rzędu = eskaluj do BUY
+            if verdict == 'WATCH':
+                self._watch_count[ticker] = self._watch_count.get(ticker, 0) + 1
+                if self._watch_count[ticker] >= 2:
+                    logger.info(f"WATCH escalation: {ticker} ({self._watch_count[ticker]}x WATCH) — eskalacja do BUY")
+                    result['verdict']        = 'BUY'
+                    result['confidence']     = 'SREDNIA'
+                    result['justification']  = (
+                        result.get('justification', '') +
+                        f" [Auto-escalacja: {self._watch_count[ticker]}x WATCH z rzędu]"
+                    )
+                    verdict = 'BUY'
+            elif verdict == 'BUY':
+                self._watch_count.pop(ticker, None)  # reset po BUY
+            elif verdict == 'AVOID':
+                self._watch_count.pop(ticker, None)  # reset po AVOID
+
             signal_id = save_signal(result, ticker_data,
                                     polygon_api=self.polygon)
             # Dodaj SL/TP do result dla alertu Telegram

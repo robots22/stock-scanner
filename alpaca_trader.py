@@ -43,6 +43,7 @@ class AlpacaPaperTrader:
             'APCA-API-SECRET-KEY': PAPER_SECRET,
             'Content-Type':        'application/json',
         })
+        self._pending_trailing = {}
         logger.info("AlpacaPaperTrader zainicjowany — Paper Trading")
 
     def _get(self, endpoint):
@@ -92,7 +93,7 @@ class AlpacaPaperTrader:
     def buy(self, ticker, entry_price, stop_loss=None, take_profit=None):
         """
         Otwiera pozycje BUY.
-        Bracket order z SL/TP jesli dostepne.
+        Uzywa bracket order z trailing stop jezeli dostepne.
         Qty = RISK_PER_TRADE_USD / risk_per_share
         """
         if not self.enabled:
@@ -114,7 +115,16 @@ class AlpacaPaperTrader:
             qty = max(1, int(RISK_PER_TRADE_USD / entry_price))
 
         max_qty = int(RISK_PER_TRADE_USD * 3 / entry_price)
-        qty = min(qty, max_qty)
+        qty     = min(qty, max_qty)
+
+        # Trailing stop percent
+        # Oblicz na podstawie stop_loss jezeli dostepny
+        # Inaczej domyslnie 4%
+        if stop_loss and stop_loss > 0 and entry_price > stop_loss:
+            trail_pct = round((entry_price - stop_loss) / entry_price * 100, 1)
+            trail_pct = max(2.0, min(trail_pct, 6.0))  # klamp 2-6%
+        else:
+            trail_pct = 4.0
 
         order = {
             'symbol':        ticker,
@@ -124,18 +134,55 @@ class AlpacaPaperTrader:
             'time_in_force': 'day',
         }
 
-        if stop_loss and take_profit:
-            order['order_class'] = 'bracket'
-            order['stop_loss']   = {'stop_price': str(round(stop_loss, 2))}
+        # Bracket order z trailing stop + take profit
+        if take_profit:
+            order['order_class'] = 'oto'  # one-triggers-other
             order['take_profit'] = {'limit_price': str(round(take_profit, 2))}
+            order['stop_loss']   = {
+                'stop_price':  str(round(stop_loss or entry_price * 0.96, 2)),
+                'trail_price': None,
+            }
+            # Alpaca trailing stop jako osobne zlecenie po BUY
+            self._pending_trailing[ticker] = {
+                'trail_percent': str(trail_pct),
+                'qty':           str(qty),
+            }
+        else:
+            # Sam trailing stop bez TP
+            order['order_class']  = 'simple'
 
         result = self._post('/v2/orders', order)
 
         if result:
-            sl_str = f" | SL: ${stop_loss:.2f} | TP: ${take_profit:.2f}" if stop_loss else ""
-            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f}{sl_str}")
+            sl_str = f" | trailing {trail_pct}%" if trail_pct else ""
+            tp_str = f" | TP: ${take_profit:.2f}" if take_profit else ""
+            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f}{sl_str}{tp_str}")
+
+            # Zloz trailing stop order
+            if ticker in self._pending_trailing:
+                self._submit_trailing_stop(ticker, self._pending_trailing.pop(ticker))
+
             return result
         return None
+
+    def _submit_trailing_stop(self, ticker, params):
+        """Sklada trailing stop order dla otwartej pozycji."""
+        import time
+        time.sleep(1)  # poczekaj na wykonanie BUY
+        try:
+            order = {
+                'symbol':        ticker,
+                'qty':           params['qty'],
+                'side':          'sell',
+                'type':          'trailing_stop',
+                'time_in_force': 'gtc',
+                'trail_percent': params['trail_percent'],
+            }
+            result = self._post('/v2/orders', order)
+            if result:
+                logger.info(f"Trailing stop: {ticker} {params['trail_percent']}%")
+        except Exception as e:
+            logger.warning(f"Trailing stop error {ticker}: {e}")
 
     def sell(self, ticker, reason='SELL_SIGNAL'):
         """Zamyka pozycje dla tickera."""

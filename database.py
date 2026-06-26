@@ -364,6 +364,32 @@ def check_retrigger_conditions(signal, uw_data):
     if not unusual and total_volume < 1000:
         return 'UW_ACTIVITY_GONE', f"UW aktywnosc zniknela — unusual: {unusual}, opcje: {total_volume}"
 
+    # Trigger 6: Time-based exit — midday slow zone
+    from config import now_chicago
+    n = now_chicago()
+    signal_time = signal.get('timestamp', '')
+    if signal_time:
+        try:
+            from datetime import datetime
+            st = datetime.fromisoformat(signal_time)
+            if st.tzinfo is None:
+                st = st.replace(tzinfo=n.tzinfo)
+            else:
+                st = st.astimezone(n.tzinfo)
+            elapsed_min = (n - st).total_seconds() / 60
+
+            # Po 90 minutach w midday (10:00-14:00) bez TP — exit
+            midday_start = n.replace(hour=10, minute=0, second=0, microsecond=0)
+            midday_end   = n.replace(hour=14, minute=0, second=0, microsecond=0)
+            if (midday_start <= n <= midday_end and
+                    elapsed_min >= 90 and
+                    price_change < 3.0):  # nie osiagnal TP
+                return 'TIME_EXIT', (
+                    f"90 min w midday bez TP ({price_change:+.1f}%) — exit"
+                )
+        except Exception:
+            pass
+
     return None, None
 
 
