@@ -130,9 +130,12 @@ class StockScanner:
         # WATCH escalation tracker {ticker: count}
         self._watch_count = {}
 
-        # Dzienny licznik BUY sygnalow
-        self._buy_count_today = 0
-        self._buy_count_date  = None
+        # Dzienny licznik BUY sygnalow - Opcja C Power Windows
+        self._buy_count_today      = 0   # lacznie
+        self._buy_count_open       = 0   # 8:30-10:00
+        self._buy_count_midday     = 0   # 10:00-14:00
+        self._buy_count_power_hour = 0   # 14:00-15:00
+        self._buy_count_date       = None
 
 
 
@@ -326,20 +329,58 @@ class StockScanner:
             ticker  = result.get('ticker', '')
             verdict = result.get('verdict', 'WATCH')
 
-            # Reset licznika o nowym dniu
+            # Reset licznikow o nowym dniu
             today = now_chicago().date()
             if self._buy_count_date != today:
-                self._buy_count_today = 0
-                self._buy_count_date  = today
+                self._buy_count_today      = 0
+                self._buy_count_open       = 0
+                self._buy_count_midday     = 0
+                self._buy_count_power_hour = 0
+                self._buy_count_date       = today
 
-            # Limit BUY sygnalow dziennie
-            max_buy = CONFIG.get('max_buy_signals_per_day', 10)
-            if verdict == 'BUY' and self._buy_count_today >= max_buy:
-                logger.info(f"Dzienny limit BUY ({max_buy}) osiagniety — {ticker} -> WATCH")
-                result['verdict'] = 'WATCH'
-                verdict           = 'WATCH'
-            elif verdict == 'BUY':
-                self._buy_count_today += 1
+            # Limit BUY sygnalow - Opcja C Power Windows
+            if verdict == 'BUY':
+                n = now_chicago()
+                open_start   = n.replace(hour=8,  minute=30, second=0, microsecond=0)
+                open_end     = n.replace(hour=10, minute=0,  second=0, microsecond=0)
+                midday_end   = n.replace(hour=14, minute=0,  second=0, microsecond=0)
+                power_end    = n.replace(hour=15, minute=0,  second=0, microsecond=0)
+
+                # Sprawdz limit dzienny
+                if self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 15):
+                    logger.info(f"Dzienny limit BUY (15) osiagniety — {ticker} -> WATCH")
+                    result['verdict'] = 'WATCH'
+                    verdict           = 'WATCH'
+
+                # Sprawdz limit per okno
+                elif open_start <= n < open_end:
+                    if self._buy_count_open >= CONFIG.get('max_buy_open', 7):
+                        logger.info(f"Open limit BUY (7) osiagniety — {ticker} -> WATCH")
+                        result['verdict'] = 'WATCH'
+                        verdict           = 'WATCH'
+                    else:
+                        self._buy_count_open  += 1
+                        self._buy_count_today += 1
+
+                elif open_end <= n < midday_end:
+                    if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5):
+                        logger.info(f"Midday limit BUY (5) osiagniety — {ticker} -> WATCH")
+                        result['verdict'] = 'WATCH'
+                        verdict           = 'WATCH'
+                    else:
+                        self._buy_count_midday += 1
+                        self._buy_count_today  += 1
+
+                elif midday_end <= n < power_end:
+                    if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3):
+                        logger.info(f"Power hour limit BUY (3) osiagniety — {ticker} -> WATCH")
+                        result['verdict'] = 'WATCH'
+                        verdict           = 'WATCH'
+                    else:
+                        self._buy_count_power_hour += 1
+                        self._buy_count_today      += 1
+                else:
+                    self._buy_count_today += 1
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
             # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
