@@ -71,6 +71,7 @@ from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 from alpaca_trader import AlpacaPaperTrader
 from momentum_scan import MomentumScanner
+from float_cache import FloatCache
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -152,6 +153,9 @@ class StockScanner:
             polygon_api     = self.polygon,
             telegram_send_fn = send_message,
         )
+
+        # Float Cache - persystowany, odswiezany co 7 dni
+        self.float_cache = FloatCache(polygon_api=self.polygon)
 
         # Telegram bot v2.0
         self.bot = None  # uruchamiany w run()
@@ -255,23 +259,25 @@ class StockScanner:
         if technical_cache:
             logger.info(f"Technical cache: {len(technical_cache)} tickerów z RSI/EMA")
 
-        # Pobierz float i gap dla TOP 20
+        # Float dla calego universe przez FloatCache
+        # Cache persystowany - gap nadal z get_float_and_gap dla TOP 20
+        self.float_cache.enrich_universe(universe)
+
+        # Gap dla TOP 20 po volume_ratio
         float_gap_cache = {}
         for t in universe_rsi:
             ticker = t['ticker']
             try:
                 fg = self.polygon.get_float_and_gap(ticker)
-                if fg.get('float_shares') or fg.get('gap_pct'):
+                if fg.get('gap_pct'):
+                    t['gap_pct']    = fg.get('gap_pct', 0)
+                    t['prev_close'] = fg.get('prev_close', 0)
                     float_gap_cache[ticker] = fg
-                    # Dodaj do raw_data tickera
-                    t['float_shares'] = fg.get('float_shares')
-                    t['gap_pct']      = fg.get('gap_pct', 0)
-                    t['prev_close']   = fg.get('prev_close', 0)
+                # Float juz dodany przez float_cache.enrich_universe
             except Exception:
                 pass
 
-        if float_gap_cache:
-            logger.info(f"Float/gap cache: {len(float_gap_cache)} tickerów")
+        logger.info(f"FloatCache stats: {self.float_cache.get_stats()}")
 
         # 4. Pre-filter → TOP 5 z options flow, news i technicznych
         top5 = get_top_tickers(
