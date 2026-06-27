@@ -219,7 +219,10 @@ def cmd_stats():
         return "❌ Błąd połączenia z bazą danych."
     try:
         c   = conn.cursor()
-        ago = (datetime.now() - timedelta(hours=24)).isoformat()
+        from datetime import timezone
+        ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        # Uzywamy datetime('now', '-24 hours') zamiast stringa
+        # zeby uniknac problemow z timezone w SQLite
         c.execute('''
             SELECT verdict,
                    COUNT(*) as cnt,
@@ -228,9 +231,10 @@ def cmd_stats():
                    AVG(outcome_24h) as avg_24h,
                    SUM(CASE WHEN outcome_1h > 0 THEN 1 ELSE 0 END) as wins_1h
             FROM signals
-            WHERE timestamp > ? AND outcome_1h IS NOT NULL
+            WHERE outcome_1h IS NOT NULL
+            AND datetime(substr(timestamp, 1, 19)) > datetime('now', '-24 hours')
             GROUP BY verdict
-        ''', (ago,))
+        ''')
         rows = c.fetchall()
 
         if not rows:
