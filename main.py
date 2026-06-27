@@ -129,6 +129,10 @@ class StockScanner:
         # WATCH escalation tracker {ticker: count}
         self._watch_count = {}
 
+        # Dzienny licznik BUY sygnalow
+        self._buy_count_today = 0
+        self._buy_count_date  = None
+
 
 
         # Kolejka manualnych analiz (z Telegram /analyze TICKER)
@@ -300,6 +304,21 @@ class StockScanner:
         for result, ticker_data in zip(results, top5):
             ticker  = result.get('ticker', '')
             verdict = result.get('verdict', 'WATCH')
+
+            # Reset licznika o nowym dniu
+            today = now_chicago().date()
+            if self._buy_count_date != today:
+                self._buy_count_today = 0
+                self._buy_count_date  = today
+
+            # Limit BUY sygnalow dziennie
+            max_buy = CONFIG.get('max_buy_signals_per_day', 10)
+            if verdict == 'BUY' and self._buy_count_today >= max_buy:
+                logger.info(f"Dzienny limit BUY ({max_buy}) osiagniety — {ticker} -> WATCH")
+                result['verdict'] = 'WATCH'
+                verdict           = 'WATCH'
+            elif verdict == 'BUY':
+                self._buy_count_today += 1
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
             # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
@@ -1115,12 +1134,19 @@ class StockScanner:
                 if now_chicago().hour == 0:
                     self._watchlist_sent_today = False
 
-                # Cykl główny (co 5 minut)
-                main_due = (self.last_main_scan is None or
-                            (now - self.last_main_scan).total_seconds()
-                            >= CONFIG['main_scan_interval'])
+                # Cykl glowny (co 5 minut) — tylko dni handlowe
+                is_weekend = now_chicago().weekday() >= 5
+                main_due = (
+                    not is_weekend and
+                    is_market_open() and
+                    (self.last_main_scan is None or
+                     (now - self.last_main_scan).total_seconds()
+                     >= CONFIG['main_scan_interval'])
+                )
 
-                if main_due:
+                if is_weekend:
+                    pass  # weekend — brak skanow, brak kosztow Claude
+                elif main_due:
                     try:
                         self.run_main_scan()
                     except Exception as e:

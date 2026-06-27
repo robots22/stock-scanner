@@ -83,6 +83,10 @@ CONFIG = {
     # Ile tickerów trafia do Claude AI na jeden cykl
     'max_tickers_for_claude': 5,
 
+    # Max sygnalow BUY dziennie — po osiagnieciu limitu Claude analizuje
+    # ale wyniki idą tylko jako WATCH na Telegram
+    'max_buy_signals_per_day': 10,
+
     # Minimalny score pre-filtra żeby ticker trafił do Claude
     # Ticker musi mieć przynajmniej jeden sygnał TIER 1 lub 2
     'min_prefilter_score': 15,
