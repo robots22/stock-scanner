@@ -66,10 +66,11 @@ from database import (init_db, save_signal, get_signal_history,
 from telegram_alerts import (alert_signal, alert_manual, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message, send_presession_watchlist,
-                              send_afterhours_catalyst)
+                              send_afterhours_catalyst, send_message)
 from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 from alpaca_trader import AlpacaPaperTrader
+from momentum_scan import MomentumScanner
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -142,6 +143,12 @@ class StockScanner:
 
         # Alpaca Paper Trader
         self.trader = AlpacaPaperTrader()
+
+        # Momentum Scanner (Tryb 2) - bez Claude
+        self.momentum = MomentumScanner(
+            polygon_api     = self.polygon,
+            telegram_send_fn = send_message,
+        )
 
         # Telegram bot v2.0
         self.bot = None  # uruchamiany w run()
@@ -273,6 +280,20 @@ class StockScanner:
             top_n           = CONFIG['max_tickers_for_claude'],
             signal_history_fn = get_signal_history,
         )
+
+        # Tryb 2: Momentum scan (bez Claude, bez kosztow)
+        # Przekaz float_shares z cache do universe
+        if is_market_open():
+            try:
+                for t in universe:
+                    ticker = t.get('ticker', '')
+                    if ticker in float_gap_cache:
+                        t['float_shares'] = float_gap_cache[ticker].get('float_shares')
+                n_alerts = self.momentum.scan(universe)
+                if n_alerts:
+                    logger.info(f"Momentum scan: {n_alerts} alertow wyslanych")
+            except Exception as e:
+                logger.warning(f"Momentum scan error: {e}")
 
         if not top5:
             logger.warning("Pre-filter: brak tickerów — pomijam analizę")
