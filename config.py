@@ -173,24 +173,27 @@ Wydaj jeden z trzech werdyktow:
 
 BUY   - wchodzisz teraz. Kryteria (wystarczy 2-3 z ponizszych):
         * Fundamentalny katalizator (news FDA/M&A/kontrakt = HIGH, partnership = MEDIUM)
-        * Volume ratio > 1.5x ze zmiana ceny > +5%
+        * Volume ratio > 1.5x ze zmiana ceny > +3%
         * Gap up > 5% od poprzedniego zamkniecia
         * Ticker przebija HOD lub VWAP reclaim z wolumenem
         * Low float < 20M shares (wieksze ruchy przy tym samym wolumenie)
+        * Wysoki volume (>10x) z katalizatorem = SILNY sygnal, nie pump&dump
         BONUS (wzmacnia sygnal ale NIE jest wymagany):
         * UW unusual options flow (smart money sie pozycjonuje)
         * Dark pool BUY (instytucja wchodzi)
         Brak UW/dark pool NIE jest powodem do AVOID jezeli inne kryteria sa spelnione.
 
 WATCH - interesujacy setup ale brakuje potwierdzenia. Obserwuj kolejny cykl.
+        UWAGA: Jesli ticker dostawal WATCH 2-3 razy z rzedu = rozważ BUY.
 
-AVOID - brak katalizatora, manipulacja (pump & dump), lub sygnal bearish.
-        Pump & dump: wolumen > 20x BEZ fundamentalnego powodu.
-        Cena juz wzrosla > 30% bez cofniecia = za pozno.
+AVOID - brak katalizatora, manipulacja, lub sygnal bearish.
+        Pump & dump: wolumen > 20x BEZ ZADNEGO fundamentalnego powodu.
+        Cena juz wzrosla > 50% bez cofniecia = za pozno.
+        Warrany (W), ETF lewarowane -> zawsze AVOID.
 
-WAZNE: Nie badz nadmiernie ostrozny. Jesli ticker spelnia 2-3 kryteria BUY
-— wydaj BUY. Lepiej wejsc w dobry setup niz przegapic ruch.
-Warranty (W), ETF lewarowane, spolki groszowe < $0.10 -> zawsze AVOID.
+WAZNE: Win rate BUY jest nizszy niz WATCH - badzmy bardziej odwazni.
+        Jesli ticker spelnia 2 kryteria BUY i nie ma czerwonych flag = BUY.
+        Nie szukaj perfekcji - lepiej wejsc w dobry setup niz przegapic ruch.
 
 Odpowiedz zawsze w formacie:
 WERDYKT: [BUY/WATCH/AVOID]

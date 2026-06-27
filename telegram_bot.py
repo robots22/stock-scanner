@@ -232,7 +232,6 @@ def cmd_stats():
                    SUM(CASE WHEN outcome_1h > 0 THEN 1 ELSE 0 END) as wins_1h
             FROM signals
             WHERE outcome_1h IS NOT NULL
-            AND datetime(substr(timestamp, 1, 19)) > datetime('now', '-24 hours')
             GROUP BY verdict
         ''')
         rows = c.fetchall()
@@ -240,7 +239,7 @@ def cmd_stats():
         if not rows:
             return "📭 Brak sygnałów z wynikami z ostatnich 24h."
 
-        lines = ["📊 <b>STATYSTYKI — ostatnie 24h</b>\n"]
+        lines = ["📊 <b>STATYSTYKI — cała historia</b>\n"]
         for row in rows:
             icon    = '🟢' if row['verdict'] == 'BUY' else (
                       '🟡' if row['verdict'] == 'WATCH' else '🔴')

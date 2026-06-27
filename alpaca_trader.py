@@ -122,7 +122,7 @@ class AlpacaPaperTrader:
         # Inaczej domyslnie 4%
         if stop_loss and stop_loss > 0 and entry_price > stop_loss:
             trail_pct = round((entry_price - stop_loss) / entry_price * 100, 1)
-            trail_pct = max(2.0, min(trail_pct, 6.0))  # klamp 2-6%
+            trail_pct = max(3.0, min(trail_pct, 6.0))  # klamp 3-6%
         else:
             trail_pct = 4.0
 
