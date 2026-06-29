@@ -134,53 +134,33 @@ class AlpacaPaperTrader:
             'time_in_force': 'day',
         }
 
-        # Bracket order z trailing stop + take profit
-        if take_profit:
-            order['order_class'] = 'oto'  # one-triggers-other
-            order['take_profit'] = {'limit_price': str(round(take_profit, 2))}
-            order['stop_loss']   = {
-                'stop_price':  str(round(stop_loss or entry_price * 0.96, 2)),
-                'trail_price': None,
-            }
-            # Alpaca trailing stop jako osobne zlecenie po BUY
-            self._pending_trailing[ticker] = {
-                'trail_percent': str(trail_pct),
-                'qty':           str(qty),
-            }
-        else:
-            # Sam trailing stop bez TP
-            order['order_class']  = 'simple'
-
         result = self._post('/v2/orders', order)
 
         if result:
-            sl_str = f" | trailing {trail_pct}%" if trail_pct else ""
-            tp_str = f" | TP: ${take_profit:.2f}" if take_profit else ""
-            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f}{sl_str}{tp_str}")
-
-            # Zloz trailing stop order
-            if ticker in self._pending_trailing:
-                self._submit_trailing_stop(ticker, self._pending_trailing.pop(ticker))
-
+            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trailing {trail_pct}%")
+            # Zloz trailing stop jako osobne zlecenie
+            self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
             return result
         return None
 
-    def _submit_trailing_stop(self, ticker, params):
+    def _submit_trailing_stop(self, ticker, qty, trail_pct):
         """Sklada trailing stop order dla otwartej pozycji."""
         import time
         time.sleep(1)  # poczekaj na wykonanie BUY
         try:
             order = {
                 'symbol':        ticker,
-                'qty':           params['qty'],
+                'qty':           qty,
                 'side':          'sell',
                 'type':          'trailing_stop',
                 'time_in_force': 'gtc',
-                'trail_percent': params['trail_percent'],
+                'trail_percent': trail_pct,
             }
             result = self._post('/v2/orders', order)
             if result:
-                logger.info(f"Trailing stop: {ticker} {params['trail_percent']}%")
+                logger.info(f"Trailing stop: {ticker} {trail_pct}%")
+            else:
+                logger.warning(f"Trailing stop FAIL: {ticker}")
         except Exception as e:
             logger.warning(f"Trailing stop error {ticker}: {e}")
 
