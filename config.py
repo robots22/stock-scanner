@@ -25,10 +25,12 @@ import sys
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
+import pathlib
 
 # ==================== KLUCZE API ====================
-# Wczytaj z pliku .env (nigdy nie wpisuj kluczy bezpośrednio tutaj)
-load_dotenv()
+# Force load .env z folderu stock-scanner
+_ENV_PATH = pathlib.Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
 POLYGON_API_KEY      = os.getenv('POLYGON_API_KEY', '')
 UNUSUAL_WHALES_KEY   = os.getenv('UNUSUAL_WHALES_KEY', '')

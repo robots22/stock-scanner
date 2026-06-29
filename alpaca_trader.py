@@ -17,8 +17,10 @@ import os
 import requests
 from config import logger, CONFIG, now_chicago
 from dotenv import load_dotenv
+import pathlib
 
-load_dotenv()
+_ENV_PATH = pathlib.Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
 PAPER_KEY    = os.getenv('ALPACA_PAPER_KEY', '')
 PAPER_SECRET = os.getenv('ALPACA_PAPER_SECRET', '')
