@@ -108,7 +108,7 @@ class AlpacaPaperTrader:
 
         if self.get_position(ticker):
             logger.info(f"Paper trader: {ticker} juz w portfelu — pomijam")
-            return None
+            return 'EXISTS'  # sygnalizuje ze pozycja juz istnieje
 
         if ticker in self._submitted_orders:
             logger.info(f"Paper trader: {ticker} zlecenie juz zlozone — pomijam")
