@@ -22,18 +22,33 @@ Historia zmian:
 from config import logger, CONFIG, now_chicago
 
 MOMENTUM_CONFIG = {
-    'trigger_a_rvol':    3.0,
-    'trigger_a_change':  5.0,
+    # Trigger A: momentum - podwyzszony prog
+    'trigger_a_rvol':    5.0,   # bylo 3.0
+    'trigger_a_change':  8.0,   # bylo 5.0
+
+    # Trigger B: low float runner
     'trigger_b_float':   5_000_000,
     'trigger_b_rvol':    50.0,
-    'trigger_c_gap':     10.0,
-    'trigger_c_rvol':    2.0,
+
+    # Trigger C: gap play - silniejszy gap
+    'trigger_c_gap':     15.0,  # bylo 10.0
+    'trigger_c_rvol':    3.0,   # bylo 2.0
+
+    # Trigger D: ultra spike
     'trigger_d_rvol':    100.0,
+
+    # Cena
     'min_price':         0.50,
     'max_price':         20.0,
-    'min_volume':        50_000,
+
+    # Volume - minimalny dla wiarygodnosci
+    'min_volume':        100_000,  # bylo 50k
+
+    # Cooldown per ticker (minuty)
     'cooldown_min':      15,
-    'max_alerts_per_cycle': 5,
+
+    # Max alertow na cykl - mniej = lepiej
+    'max_alerts_per_cycle': 3,  # bylo 5
 }
 
 EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
@@ -85,14 +100,15 @@ class MomentumScanner:
         if volume < cfg['min_volume']:
             return None, None
 
-        if ratio >= cfg['trigger_d_rvol']:
+        # Trigger D: ultra spike (najwyzszy priorytet)
+        if ratio >= cfg['trigger_d_rvol'] and change > 0:
             return 'ULTRA_SPIKE', 'Vol ' + '{:.0f}'.format(ratio) + 'x ekstremalny'
 
-        if float_sh > 0 and float_sh <= cfg['trigger_b_float'] and ratio >= cfg['trigger_b_rvol']:
+        if float_sh > 0 and float_sh <= cfg['trigger_b_float'] and ratio >= cfg['trigger_b_rvol'] and change > 0:
             float_m = float_sh / 1_000_000
             return 'LOW_FLOAT', 'Float ' + '{:.1f}'.format(float_m) + 'M + vol ' + '{:.0f}'.format(ratio) + 'x'
 
-        if gap >= cfg['trigger_c_gap'] and ratio >= cfg['trigger_c_rvol']:
+        if gap >= cfg['trigger_c_gap'] and ratio >= cfg['trigger_c_rvol'] and change > 0:
             return 'GAP_PLAY', 'Gap ' + '{:+.0f}'.format(gap) + '% + vol ' + '{:.1f}'.format(ratio) + 'x'
 
         if ratio >= cfg['trigger_a_rvol'] and change >= cfg['trigger_a_change']:

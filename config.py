@@ -196,6 +196,7 @@ AVOID - brak katalizatora, manipulacja, lub sygnal bearish.
         Pump & dump: wolumen > 20x BEZ ZADNEGO fundamentalnego powodu.
         Cena juz wzrosla > 50% bez cofniecia = za pozno.
         Warrany (W), ETF lewarowane -> zawsze AVOID.
+        Ujemna zmiana ceny (change < 0%) = zawsze AVOID chyba ze wyrazny katalyzator.
 
 WAZNE: Win rate BUY jest nizszy niz WATCH - badzmy bardziej odwazni.
         Jesli ticker spelnia 2 kryteria BUY i nie ma czerwonych flag = BUY.

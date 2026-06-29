@@ -411,6 +411,13 @@ def score_ticker(ticker_data, dark_pool_flow=None, finnhub_data=None,
     elif abs_chg > 15.0 and change > 0:
         score += 3
 
+    # Kara za ujemna zmiane
+    if change < -3.0:
+        flags.append(f"Ujemna zmiana {change:+.1f}%")
+        score -= 10
+    elif change < 0:
+        score -= 5
+
     # ================================================================
     # PENALTIES - czerwone flagi
     # ================================================================
