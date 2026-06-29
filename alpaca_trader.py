@@ -144,9 +144,11 @@ class AlpacaPaperTrader:
         result = self._post('/v2/orders', order)
 
         if result:
-            self._submitted_orders.add(ticker)  # zapamietaj ze zlecenie zlozone
+            self._submitted_orders.add(ticker)
             logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trailing {trail_pct}%")
             self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
+            if take_profit:
+                self._submit_take_profit(ticker, str(qty), str(round(take_profit, 2)))
             return result
         return None
 
@@ -185,6 +187,40 @@ class AlpacaPaperTrader:
 
         logger.warning(f"Trailing stop {ticker}: nie udalo sie po 3 probach")
         return False
+
+    def _submit_take_profit(self, ticker, qty, limit_price):
+        """Sklada limit sell order jako take profit."""
+        import time
+        time.sleep(1)
+        try:
+            pos = self.get_position(ticker)
+            if not pos:
+                logger.debug(f"Take profit {ticker}: brak pozycji")
+                return False
+
+            available_qty = pos.get('qty_available') or pos.get('qty') or qty
+            if int(float(available_qty)) <= 0:
+                logger.debug(f"Take profit {ticker}: qty_available=0")
+                return False
+
+            order = {
+                'symbol':        ticker,
+                'qty':           str(available_qty),
+                'side':          'sell',
+                'type':          'limit',
+                'time_in_force': 'gtc',
+                'limit_price':   str(limit_price),
+            }
+            result = self._post('/v2/orders', order)
+            if result:
+                logger.info(f"Take profit: {ticker} @ ${limit_price}")
+                return True
+            else:
+                logger.warning(f"Take profit FAIL: {ticker}")
+                return False
+        except Exception as e:
+            logger.warning(f"Take profit error {ticker}: {e}")
+            return False
 
     def sell(self, ticker, reason='SELL_SIGNAL'):
         """Zamyka pozycje dla tickera."""
