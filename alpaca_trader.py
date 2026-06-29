@@ -44,6 +44,7 @@ class AlpacaPaperTrader:
             'Content-Type':        'application/json',
         })
         self._pending_trailing = {}
+        self._submitted_orders = set()  # tickery z juz zlozonym zleceniem BUY
         logger.info("AlpacaPaperTrader zainicjowany — Paper Trading")
 
     def _get(self, endpoint):
@@ -107,6 +108,10 @@ class AlpacaPaperTrader:
             logger.info(f"Paper trader: {ticker} juz w portfelu — pomijam")
             return None
 
+        if ticker in self._submitted_orders:
+            logger.info(f"Paper trader: {ticker} zlecenie juz zlozone — pomijam")
+            return None
+
         # Oblicz qty
         if stop_loss and stop_loss > 0 and entry_price > stop_loss:
             risk_per_share = entry_price - stop_loss
@@ -137,8 +142,8 @@ class AlpacaPaperTrader:
         result = self._post('/v2/orders', order)
 
         if result:
+            self._submitted_orders.add(ticker)  # zapamietaj ze zlecenie zlozone
             logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trailing {trail_pct}%")
-            # Zloz trailing stop jako osobne zlecenie
             self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
             return result
         return None
@@ -180,6 +185,7 @@ class AlpacaPaperTrader:
 
         result = self._delete(f'/v2/positions/{ticker}')
         if result:
+            self._submitted_orders.discard(ticker)  # pozwol na nowy BUY
             logger.info(f"Paper SELL: {ticker} @ ${price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.1f}%) | {reason}")
             return {'ticker': ticker, 'pnl': pnl, 'pnl_pct': pnl_pct}
         return None
