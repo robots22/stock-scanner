@@ -153,23 +153,35 @@ class AlpacaPaperTrader:
     def _submit_trailing_stop(self, ticker, qty, trail_pct):
         """Sklada trailing stop order dla otwartej pozycji."""
         import time
-        time.sleep(1)  # poczekaj na wykonanie BUY
-        try:
-            order = {
-                'symbol':        ticker,
-                'qty':           qty,
-                'side':          'sell',
-                'type':          'trailing_stop',
-                'time_in_force': 'gtc',
-                'trail_percent': trail_pct,
-            }
-            result = self._post('/v2/orders', order)
-            if result:
-                logger.info(f"Trailing stop: {ticker} {trail_pct}%")
-            else:
-                logger.warning(f"Trailing stop FAIL: {ticker}")
-        except Exception as e:
-            logger.warning(f"Trailing stop error {ticker}: {e}")
+        # Poczekaj az BUY zostanie wykonany
+        for attempt in range(3):
+            time.sleep(2)
+            try:
+                # Sprawdz czy pozycja istnieje
+                pos = self.get_position(ticker)
+                if not pos:
+                    logger.debug(f"Trailing stop {ticker}: pozycja jeszcze nie otwarta (proba {attempt+1}/3)")
+                    continue
+
+                order = {
+                    'symbol':        ticker,
+                    'qty':           str(qty),
+                    'side':          'sell',
+                    'type':          'trailing_stop',
+                    'time_in_force': 'gtc',
+                    'trail_percent': str(trail_pct),
+                }
+                result = self._post('/v2/orders', order)
+                if result:
+                    logger.info(f"Trailing stop: {ticker} {trail_pct}% [proba {attempt+1}]")
+                    return True
+                else:
+                    logger.warning(f"Trailing stop FAIL: {ticker} [proba {attempt+1}]")
+            except Exception as e:
+                logger.warning(f"Trailing stop error {ticker}: {e}")
+
+        logger.warning(f"Trailing stop {ticker}: nie udalo sie po 3 probach")
+        return False
 
     def sell(self, ticker, reason='SELL_SIGNAL'):
         """Zamyka pozycje dla tickera."""
