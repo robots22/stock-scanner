@@ -348,7 +348,9 @@ class StockScanner:
             # Limit BUY - Opcja C Power Windows
             # Poza godzinami rynkowymi = brak BUY
             if verdict == 'BUY':
-                n = now_chicago()
+                n          = now_chicago()
+                confidence = result.get('confidence', '')
+                is_wysoka  = (confidence == 'WYSOKA')
 
                 if not is_market_open():
                     result['verdict'] = 'WATCH'
@@ -356,9 +358,13 @@ class StockScanner:
                     logger.debug(f"{ticker}: BUY poza sesja -> WATCH")
 
                 elif self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 15):
-                    result['verdict'] = 'WATCH'
-                    verdict           = 'WATCH'
-                    logger.info(f"Dzienny limit BUY (15) -> {ticker} WATCH")
+                    if not is_wysoka:
+                        result['verdict'] = 'WATCH'
+                        verdict           = 'WATCH'
+                        logger.info(f"Dzienny limit BUY (15) -> {ticker} WATCH")
+                    else:
+                        logger.info(f"Dzienny limit BUY (15) ale WYSOKA -> {ticker} BUY override")
+                        self._buy_count_today += 1
 
                 else:
                     open_start = n.replace(hour=8,  minute=30, second=0, microsecond=0)
@@ -367,7 +373,7 @@ class StockScanner:
                     power_end  = n.replace(hour=15, minute=0,  second=0, microsecond=0)
 
                     if open_start <= n < open_end:
-                        if self._buy_count_open >= CONFIG.get('max_buy_open', 7):
+                        if self._buy_count_open >= CONFIG.get('max_buy_open', 7) and not is_wysoka:
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
                             logger.info(f"Open limit (7) -> {ticker} WATCH")
@@ -376,7 +382,7 @@ class StockScanner:
                             self._buy_count_today += 1
 
                     elif open_end <= n < midday_end:
-                        if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5):
+                        if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5) and not is_wysoka:
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
                             logger.info(f"Midday limit (5) -> {ticker} WATCH")
@@ -385,7 +391,7 @@ class StockScanner:
                             self._buy_count_today  += 1
 
                     elif midday_end <= n < power_end:
-                        if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3):
+                        if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3) and not is_wysoka:
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
                             logger.info(f"Power hour limit (3) -> {ticker} WATCH")
@@ -393,7 +399,6 @@ class StockScanner:
                             self._buy_count_power_hour += 1
                             self._buy_count_today      += 1
                     else:
-                        # Poza oknami (np. pre-market BUY z pre-market scan)
                         self._buy_count_today += 1
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
