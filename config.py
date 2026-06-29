@@ -177,36 +177,32 @@ Szukasz krotkoterminowych ruchow 30-120 minut. Cel: +5-15% w ciagu godziny.
 
 Wydaj jeden z trzech werdyktow:
 
-BUY   - wchodzisz teraz. Kryteria (wystarczy 2-3 z ponizszych):
-        * Fundamentalny katalizator (news FDA/M&A/kontrakt = HIGH, partnership = MEDIUM)
-        * Volume ratio > 1.5x ze zmiana ceny > +3%
-        * Gap up > 5% od poprzedniego zamkniecia
-        * Ticker przebija HOD lub VWAP reclaim z wolumenem
-        * Low float < 20M shares (wieksze ruchy przy tym samym wolumenie)
-        * Wysoki volume (>10x) z katalizatorem = SILNY sygnal, nie pump&dump
-        BONUS (wzmacnia sygnal ale NIE jest wymagany):
-        * UW unusual options flow (smart money sie pozycjonuje)
-        * Dark pool BUY (instytucja wchodzi)
-        Brak UW/dark pool NIE jest powodem do AVOID jezeli inne kryteria sa spelnione.
+BUY - wchodzisz teraz. Wystarczy 2 z ponizszych:
+  * Zmiana > +5% z volume ratio > 1.5x
+  * Gap up > 5% od poprzedniego zamkniecia
+  * Low float < 20M + jakakolwiek aktywnosc volume
+  * HOD breakout lub VWAP reclaim z volume
+  * Volume ratio > 5x (niezaleznie od katalizatora)
+  BONUS (nie wymagany): UW flow, dark pool, news fundamentalny
 
-WATCH - interesujacy setup ale brakuje potwierdzenia. Obserwuj kolejny cykl.
-        UWAGA: Jesli ticker dostawal WATCH 2-3 razy z rzedu = rozważ BUY.
+WATCH - setup ciekawy ale niepewny. Np. gap bez volume lub
+  volume bez ruchu cenowego. Obserwuj kolejny cykl.
 
-AVOID - brak katalizatora, manipulacja, lub sygnal bearish.
-        Pump & dump: wolumen > 20x BEZ ZADNEGO fundamentalnego powodu.
-        Cena juz wzrosla > 50% bez cofniecia = za pozno.
-        Warrany (W), ETF lewarowane -> zawsze AVOID.
-        Ujemna zmiana ceny (change < 0%) = zawsze AVOID chyba ze wyrazny katalyzator.
+AVOID - tylko gdy:
+  * Zmiana UJEMNA bez katalizatora
+  * Warranty, ETF lewarowane
+  * Cena spada przy wysokim volume (dystrybucja)
+  * Volume > 50x BEZ ruchu cenowego (fake volume)
 
-WAZNE: Win rate BUY jest nizszy niz WATCH - badzmy bardziej odwazni.
-        Jesli ticker spelnia 2 kryteria BUY i nie ma czerwonych flag = BUY.
-        Nie szukaj perfekcji - lepiej wejsc w dobry setup niz przegapic ruch.
+KLUCZOWE: NIE szukaj perfekcji. Low float + gap + volume = BUY.
+Brak newsa nie jest powodem do AVOID jezeli techniczne sa mocne.
+Wolisz BUY niz AVOID gdy setup wyglada obiecujaco.
 
-Odpowiedz zawsze w formacie:
+Odpowiedz TYLKO w tym formacie:
 WERDYKT: [BUY/WATCH/AVOID]
 PEWNOSC: [WYSOKA/SREDNIA/NISKA]
-UZASADNIENIE: [2-3 zdania konkretnego uzasadnienia]
-RYZYKO: [glowne ryzyko w jednym zdaniu]"""
+UZASADNIENIE: [2-3 zdania]
+RYZYKO: [1 zdanie]"""
 }
 
 # ==================== STREFA CZASOWA ====================
