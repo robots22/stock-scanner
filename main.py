@@ -343,50 +343,58 @@ class StockScanner:
                 self._buy_count_midday     = 0
                 self._buy_count_power_hour = 0
                 self._buy_count_date       = today
+                logger.info(f"Power Windows reset: nowy dzien {today}")
 
-            # Limit BUY sygnalow - Opcja C Power Windows
+            # Limit BUY - Opcja C Power Windows
+            # Poza godzinami rynkowymi = brak BUY
             if verdict == 'BUY':
                 n = now_chicago()
-                open_start   = n.replace(hour=8,  minute=30, second=0, microsecond=0)
-                open_end     = n.replace(hour=10, minute=0,  second=0, microsecond=0)
-                midday_end   = n.replace(hour=14, minute=0,  second=0, microsecond=0)
-                power_end    = n.replace(hour=15, minute=0,  second=0, microsecond=0)
 
-                # Sprawdz limit dzienny
-                if self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 15):
-                    logger.info(f"Dzienny limit BUY (15) osiagniety — {ticker} -> WATCH")
+                if not is_market_open():
                     result['verdict'] = 'WATCH'
                     verdict           = 'WATCH'
+                    logger.debug(f"{ticker}: BUY poza sesja -> WATCH")
 
-                # Sprawdz limit per okno
-                elif open_start <= n < open_end:
-                    if self._buy_count_open >= CONFIG.get('max_buy_open', 7):
-                        logger.info(f"Open limit BUY (7) osiagniety — {ticker} -> WATCH")
-                        result['verdict'] = 'WATCH'
-                        verdict           = 'WATCH'
-                    else:
-                        self._buy_count_open  += 1
-                        self._buy_count_today += 1
+                elif self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 15):
+                    result['verdict'] = 'WATCH'
+                    verdict           = 'WATCH'
+                    logger.info(f"Dzienny limit BUY (15) -> {ticker} WATCH")
 
-                elif open_end <= n < midday_end:
-                    if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5):
-                        logger.info(f"Midday limit BUY (5) osiagniety — {ticker} -> WATCH")
-                        result['verdict'] = 'WATCH'
-                        verdict           = 'WATCH'
-                    else:
-                        self._buy_count_midday += 1
-                        self._buy_count_today  += 1
-
-                elif midday_end <= n < power_end:
-                    if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3):
-                        logger.info(f"Power hour limit BUY (3) osiagniety — {ticker} -> WATCH")
-                        result['verdict'] = 'WATCH'
-                        verdict           = 'WATCH'
-                    else:
-                        self._buy_count_power_hour += 1
-                        self._buy_count_today      += 1
                 else:
-                    self._buy_count_today += 1
+                    open_start = n.replace(hour=8,  minute=30, second=0, microsecond=0)
+                    open_end   = n.replace(hour=10, minute=0,  second=0, microsecond=0)
+                    midday_end = n.replace(hour=14, minute=0,  second=0, microsecond=0)
+                    power_end  = n.replace(hour=15, minute=0,  second=0, microsecond=0)
+
+                    if open_start <= n < open_end:
+                        if self._buy_count_open >= CONFIG.get('max_buy_open', 7):
+                            result['verdict'] = 'WATCH'
+                            verdict           = 'WATCH'
+                            logger.info(f"Open limit (7) -> {ticker} WATCH")
+                        else:
+                            self._buy_count_open  += 1
+                            self._buy_count_today += 1
+
+                    elif open_end <= n < midday_end:
+                        if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5):
+                            result['verdict'] = 'WATCH'
+                            verdict           = 'WATCH'
+                            logger.info(f"Midday limit (5) -> {ticker} WATCH")
+                        else:
+                            self._buy_count_midday += 1
+                            self._buy_count_today  += 1
+
+                    elif midday_end <= n < power_end:
+                        if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3):
+                            result['verdict'] = 'WATCH'
+                            verdict           = 'WATCH'
+                            logger.info(f"Power hour limit (3) -> {ticker} WATCH")
+                        else:
+                            self._buy_count_power_hour += 1
+                            self._buy_count_today      += 1
+                    else:
+                        # Poza oknami (np. pre-market BUY z pre-market scan)
+                        self._buy_count_today += 1
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
             # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
