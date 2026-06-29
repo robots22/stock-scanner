@@ -163,9 +163,12 @@ class AlpacaPaperTrader:
                     logger.debug(f"Trailing stop {ticker}: pozycja jeszcze nie otwarta (proba {attempt+1}/3)")
                     continue
 
+                # Uzyj dostepnej ilosci akcji (nie oryginalnej)
+                available_qty = pos.get('qty_available') or pos.get('qty') or qty
+
                 order = {
                     'symbol':        ticker,
-                    'qty':           str(qty),
+                    'qty':           str(available_qty),
                     'side':          'sell',
                     'type':          'trailing_stop',
                     'time_in_force': 'gtc',
