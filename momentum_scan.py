@@ -8,47 +8,37 @@ Zadanie:
   Wykrywa volume spikes + gap + float runners.
   Zero kosztow Claude.
 
-Triggery (wystarczy jeden):
-  A) RVOL > 3x + zmiana > 5%           (momentum)
-  B) Float < 5M + RVOL > 50x           (low float runner)
-  C) Gap > 10% + RVOL > 2x             (gap play)
-  D) RVOL > 100x                        (ultra spike)
+  Sygnaly zapisywane do bazy (verdict='MOMENTUM') do przyszlej
+  analizy self-learning. Telegram alerty wylaczone - tylko DB.
+
+Triggery (wystarczy jeden, wszystkie wymagaja change > 0):
+  A) RVOL > 5x + zmiana > 8%            (momentum)
+  B) Float < 5M + RVOL > 50x            (low float runner)
+  C) Gap > 15% + RVOL > 3x              (gap play)
+  D) RVOL > 100x                         (ultra spike)
 
 Historia zmian:
   v1.0 - pierwsza wersja
-  v1.1 - nowy format: TRYB 2 widoczny, entry/stop/target, timing WCZESNY/SREDNI/POZNY
+  v1.1 - nowy format entry/stop/target, timing
+  v1.2 - silniejsze progi, change>0 wymagane
+  v1.3 - Telegram wylaczony, zapis do DB dla self-learning
 """
 
 from config import logger, CONFIG, now_chicago
 
 MOMENTUM_CONFIG = {
-    # Trigger A: momentum - podwyzszony prog
-    'trigger_a_rvol':    5.0,   # bylo 3.0
-    'trigger_a_change':  8.0,   # bylo 5.0
-
-    # Trigger B: low float runner
+    'trigger_a_rvol':    5.0,
+    'trigger_a_change':  8.0,
     'trigger_b_float':   5_000_000,
     'trigger_b_rvol':    50.0,
-
-    # Trigger C: gap play - silniejszy gap
-    'trigger_c_gap':     15.0,  # bylo 10.0
-    'trigger_c_rvol':    3.0,   # bylo 2.0
-
-    # Trigger D: ultra spike
+    'trigger_c_gap':     15.0,
+    'trigger_c_rvol':    3.0,
     'trigger_d_rvol':    100.0,
-
-    # Cena
     'min_price':         0.50,
     'max_price':         20.0,
-
-    # Volume - minimalny dla wiarygodnosci
-    'min_volume':        100_000,  # bylo 50k
-
-    # Cooldown per ticker (minuty)
+    'min_volume':        100_000,
     'cooldown_min':      15,
-
-    # Max alertow na cykl - mniej = lepiej
-    'max_alerts_per_cycle': 3,  # bylo 5
+    'max_alerts_per_cycle': 3,
 }
 
 EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
@@ -56,13 +46,14 @@ EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
 
 class MomentumScanner:
 
-    def __init__(self, polygon_api, telegram_send_fn):
-        self.polygon       = polygon_api
-        self.send          = telegram_send_fn
-        self._alerted      = {}
-        self._daily_alerts = set()
-        self._alert_date   = None
-        logger.info("MomentumScanner zainicjowany")
+    def __init__(self, polygon_api, telegram_send_fn, save_signal_fn=None):
+        self.polygon        = polygon_api
+        self.send            = telegram_send_fn
+        self.save_signal_fn  = save_signal_fn  # callback do zapisu w DB
+        self._alerted        = {}
+        self._daily_alerts   = set()
+        self._alert_date     = None
+        logger.info("MomentumScanner zainicjowany (DB-only, Telegram wylaczony)")
 
     def _reset_daily(self):
         today = now_chicago().date()
@@ -100,11 +91,11 @@ class MomentumScanner:
         if volume < cfg['min_volume']:
             return None, None
 
-        # Trigger D: ultra spike (najwyzszy priorytet)
         if ratio >= cfg['trigger_d_rvol'] and change > 0:
             return 'ULTRA_SPIKE', 'Vol ' + '{:.0f}'.format(ratio) + 'x ekstremalny'
 
-        if float_sh > 0 and float_sh <= cfg['trigger_b_float'] and ratio >= cfg['trigger_b_rvol'] and change > 0:
+        if (float_sh > 0 and float_sh <= cfg['trigger_b_float']
+                and ratio >= cfg['trigger_b_rvol'] and change > 0):
             float_m = float_sh / 1_000_000
             return 'LOW_FLOAT', 'Float ' + '{:.1f}'.format(float_m) + 'M + vol ' + '{:.0f}'.format(ratio) + 'x'
 
@@ -116,100 +107,12 @@ class MomentumScanner:
 
         return None, None
 
-    def _format_alert(self, ticker_data, trigger_name, trigger_desc):
-        ticker   = ticker_data.get('ticker', '')
-        price    = ticker_data.get('price', 0)
-        change   = ticker_data.get('change_pct', 0)
-        volume   = ticker_data.get('volume', 0)
-        ratio    = ticker_data.get('volume_ratio', 0)
-        gap      = ticker_data.get('gap_pct', 0)
-        float_sh = ticker_data.get('float_shares')
-        vwap     = ticker_data.get('vwap', 0)
-        high     = ticker_data.get('high', 0)
-        time_str = now_chicago().strftime('%H:%M CST')
-        dash     = chr(8212)
-
-        trigger_emoji = {
-            'ULTRA_SPIKE': chr(128308) + chr(128308),
-            'LOW_FLOAT':   chr(9889) + chr(9889),
-            'GAP_PLAY':    chr(128200),
-            'MOMENTUM':    chr(9889),
-        }.get(trigger_name, chr(9889))
-
-        # Float
-        float_str = ''
-        if float_sh:
-            if float_sh < 1_000_000:
-                float_str = ' | Float ' + '{:.0f}'.format(float_sh / 1000) + 'k'
-            else:
-                float_str = ' | Float ' + '{:.1f}'.format(float_sh / 1_000_000) + 'M'
-
-        # Gap
-        gap_str = (' | Gap ' + '{:+.0f}'.format(gap) + '%') if gap else ''
-
-        # VWAP
-        vwap_pct = 0
-        vwap_str = ''
-        if vwap and price:
-            vwap_pct = ((price - vwap) / vwap) * 100
-            vwap_str = ' | VWAP ' + '{:+.1f}'.format(vwap_pct) + '%'
-
-        # HOD
-        hod_str = ''
-        if high and price:
-            hod_pct = ((price - high) / high) * 100
-            if hod_pct >= -1.0:
-                hod_str = ' | ' + chr(128293) + 'HOD'
-
-        # Entry suggestion
-        if vwap and price and abs(vwap_pct) <= 5:
-            entry_price  = round(vwap * 1.005, 2)
-            entry_reason = 'VWAP'
-        else:
-            entry_price  = price
-            entry_reason = 'current'
-
-        stop_price   = round(entry_price * 0.97, 2)
-        target_price = round(entry_price * 1.06, 2)
-        risk         = entry_price - stop_price
-        reward       = target_price - entry_price
-        rr           = round(reward / risk, 1) if risk > 0 else 2.0
-
-        # Timing
-        n = now_chicago()
-        open_time   = n.replace(hour=8, minute=30, second=0, microsecond=0)
-        elapsed_min = (n - open_time).total_seconds() / 60 if n > open_time else 0
-
-        if elapsed_min < 30:
-            timing = chr(128994) + ' WCZESNY'
-        elif elapsed_min < 90:
-            timing = chr(128993) + ' SREDNI'
-        else:
-            timing = chr(128308) + ' POZNY'
-
-        lines = [
-            chr(9889) + chr(9889) + ' <b>TRYB 2 ' + dash + ' ' + ticker + '</b> ' + trigger_emoji,
-            chr(9200) + ' ' + time_str + ' | ' + timing,
-            '',
-            chr(128176) + ' $' + '{:.2f}'.format(price) +
-            ' (' + '{:+.1f}'.format(change) + '%)' +
-            gap_str + float_str,
-            chr(128202) + ' Vol: ' + '{:,}'.format(volume) +
-            ' (' + '{:.0f}'.format(ratio) + 'x)' +
-            vwap_str + hod_str,
-            '',
-            chr(128073) + ' <b>SUGEROWANY ENTRY:</b>',
-            '  Wejscie: <b>$' + '{:.2f}'.format(entry_price) + '</b> [' + entry_reason + ']',
-            '  Stop:    $' + '{:.2f}'.format(stop_price) + ' (-3%)',
-            '  Target:  $' + '{:.2f}'.format(target_price) + ' (+6%)',
-            '  R/R:     ' + '{:.1f}'.format(rr) + ':1',
-            '',
-            chr(9888) + ' Decyzja i ryzyko po stronie tradera',
-        ]
-
-        return chr(10).join(lines)
-
     def scan(self, universe):
+        """
+        Glowna funkcja skanowania.
+        Zapisuje trafienia do bazy (jesli save_signal_fn podany).
+        Telegram alerty WYLACZONE.
+        """
         self._reset_daily()
 
         if not universe:
@@ -237,22 +140,29 @@ class MomentumScanner:
             reverse=True
         )
 
-        alerts_sent  = 0
-        max_alerts   = MOMENTUM_CONFIG['max_alerts_per_cycle']
+        alerts_sent = 0
+        max_alerts  = MOMENTUM_CONFIG['max_alerts_per_cycle']
 
         for ticker_data, trigger_name, trigger_desc in triggered[:max_alerts]:
-            ticker  = ticker_data.get('ticker', '')
-            message = self._format_alert(ticker_data, trigger_name, trigger_desc)
+            ticker = ticker_data.get('ticker', '')
 
-            if self.send(message):
-                self._alerted[ticker]     = now_chicago()
-                self._daily_alerts.add(ticker)
-                alerts_sent += 1
-                logger.info(
-                    'Momentum [' + trigger_name + ']: ' + ticker +
-                    ' | $' + '{:.2f}'.format(ticker_data.get('price', 0)) +
-                    ' | vol ' + '{:.0f}'.format(ticker_data.get('volume_ratio', 0)) + 'x'
-                )
+            # Zapisz do bazy (do analizy / self-learning)
+            if self.save_signal_fn:
+                try:
+                    self.save_signal_fn(ticker_data, trigger_name, trigger_desc)
+                except Exception as e:
+                    logger.warning(f"Momentum DB save error {ticker}: {e}")
+
+            self._alerted[ticker] = now_chicago()
+            self._daily_alerts.add(ticker)
+            alerts_sent += 1
+
+            logger.info(
+                'Momentum [' + trigger_name + ']: ' + ticker +
+                ' | $' + '{:.2f}'.format(ticker_data.get('price', 0)) +
+                ' | vol ' + '{:.0f}'.format(ticker_data.get('volume_ratio', 0)) + 'x' +
+                ' [DB only]'
+            )
 
         return alerts_sent
 

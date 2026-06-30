@@ -173,6 +173,52 @@ def save_signal(result, ticker_data, polygon_api=None):
         conn.close()
 
 
+def save_momentum_signal(ticker_data, trigger_name, trigger_desc):
+    """
+    Zapisuje sygnal z Trybu 2 (MomentumScanner) do bazy.
+    Uzywa tej samej tabeli signals z verdict='MOMENTUM'.
+    Bez monitoringu, bez stop_loss/take_profit (informacyjny).
+    Sluzy do przyszlej analizy self-learning.
+    """
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO signals (
+                ticker, timestamp, verdict, confidence,
+                justification, risk, price, volume,
+                volume_ratio, change_pct, score, reasons,
+                raw_response, demo_mode, monitoring, monitoring_end,
+                stop_loss, take_profit, rr_ratio, risk_pct,
+                reward_pct, sl_basis, atr
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            ticker_data.get('ticker'),
+            now_chicago().isoformat(),
+            'MOMENTUM',
+            trigger_name,        # uzywamy pola confidence na trigger_name
+            trigger_desc,        # justification = opis triggera
+            None,
+            ticker_data.get('price', 0),
+            ticker_data.get('volume', 0),
+            ticker_data.get('volume_ratio', 1.0),
+            ticker_data.get('change_pct', 0),
+            0,
+            json.dumps([trigger_desc]),
+            '',
+            0,
+            0, None,  # monitoring=0, brak monitoring_end
+            None, None, None, None,
+            None, None, None,
+        ))
+        signal_id = c.lastrowid
+        conn.commit()
+        return signal_id
+    finally:
+        conn.close()
+
+
 def get_signal_history(ticker, limit=5):
     conn = get_connection()
     try:
