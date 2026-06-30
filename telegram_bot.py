@@ -270,6 +270,7 @@ def cmd_performance():
         return "❌ Błąd połączenia z bazą danych."
     try:
         c = conn.cursor()
+        # Ostatnie 7 dni tylko - stare dane sa nieaktualne
         c.execute('''
             SELECT verdict,
                    COUNT(*) as cnt,
@@ -281,23 +282,29 @@ def cmd_performance():
                    MIN(outcome_1h)  as worst
             FROM signals
             WHERE outcome_1h IS NOT NULL
+            AND DATE(timestamp) >= DATE('now', '-7 days')
             GROUP BY verdict
         ''')
         rows = c.fetchall()
 
         if not rows:
+            # Sprawdz czy sa sygnaly bez outcome
+            c.execute("SELECT COUNT(*) FROM signals WHERE DATE(timestamp) >= DATE('now', '-7 days')")
+            total = c.fetchone()[0]
             return (
-                "📭 Brak sygnałów z wynikami.\n"
-                "Wyniki pojawiają się automatycznie po 1h/4h/24h od sygnału."
+                f"📭 Brak wyników z ostatnich 7 dni ({total} sygnałów bez outcome).\n"
+                "Wyniki pojawiają się po 1h/4h/24h od sygnału.\n"
+                "Uruchom: python3 debug_outcomes.py"
             )
 
-        lines = ["📈 <b>PERFORMANCE — cała historia</b>\n"]
+        lines = ["📈 <b>PERFORMANCE — ostatnie 7 dni</b>\n"]
         for row in rows:
             icon = '🟢' if row['verdict'] == 'BUY' else (
                    '🟡' if row['verdict'] == 'WATCH' else '🔴')
-            wr   = round(row['wins_1h'] / row['cnt'] * 100, 1) if row['cnt'] else 0
+            has_outcome = row['cnt'] or 0
+            wr   = round(row['wins_1h'] / has_outcome * 100, 1) if has_outcome else 0
             lines.append(
-                f"{icon} <b>{row['verdict']}</b> — {row['cnt']} sygnałów\n"
+                f"{icon} <b>{row['verdict']}</b> — {has_outcome} sygnałów\n"
                 f"   Win rate 1h:  {wr}%\n"
                 f"   Avg 1h:  {(row['avg_1h'] or 0):+.2f}%\n"
                 f"   Avg 4h:  {(row['avg_4h'] or 0):+.2f}%\n"
