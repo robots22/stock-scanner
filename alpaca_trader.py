@@ -145,10 +145,22 @@ class AlpacaPaperTrader:
 
         if result:
             self._submitted_orders.add(ticker)
-            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trailing {trail_pct}%")
-            self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
-            if take_profit:
-                self._submit_take_profit(ticker, str(qty), str(round(take_profit, 2)))
+            logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trail {trail_pct}%")
+
+            # Partial exit: 50% @ TP, trailing stop na reszte
+            half_qty = max(1, qty // 2)
+            rest_qty = qty - half_qty
+
+            if take_profit and take_profit > entry_price:
+                # 50% sell limit @ TP
+                self._submit_take_profit(ticker, str(half_qty), str(round(take_profit, 2)))
+                # 50% trailing stop
+                if rest_qty > 0:
+                    self._submit_trailing_stop(ticker, str(rest_qty), str(trail_pct))
+            else:
+                # Bez TP: trailing stop na calą pozycje
+                self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
+
             return result
         return None
 

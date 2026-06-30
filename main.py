@@ -773,6 +773,82 @@ class StockScanner:
 
     # ==================== EXTENDED HOURS ====================
 
+    def run_premarket_watchlist(self):
+        """
+        Pre-market watchlist 8:00 CST.
+        Top 10 gainerow premarket - wysyla na Telegram przed otwarciem.
+        Trader wie co obserwowac PRZED dzwonkiem.
+        """
+        logger.info("=== PRE-MARKET WATCHLIST ===")
+
+        universe = self.polygon.get_universe(
+            min_volume=CONFIG.get('min_volume_extended', 10_000)
+        )
+        if not universe:
+            return
+
+        self.float_cache.enrich_universe(universe)
+
+        candidates = [
+            t for t in universe
+            if (0.10 <= t.get('price', 0) <= 15.0
+                and t.get('change_pct', 0) > 0
+                and t.get('volume', 0) >= 50_000)
+        ]
+        if not candidates:
+            logger.info("Pre-market watchlist: brak kandydatow")
+            return
+
+        candidates.sort(key=lambda x: abs(x.get('gap_pct', 0)), reverse=True)
+        top10 = candidates[:10]
+
+        time_str = now_chicago().strftime('%H:%M CST')
+        dash = chr(8212)
+        lines_msg = [
+            chr(128270) + chr(128293) + ' <b>PRE-MARKET WATCHLIST ' + dash + ' ' + time_str + '</b>',
+            'Top gainerzy przed otwarciem. Rynek otwiera sie o 8:30 CST.',
+            '',
+        ]
+
+        for idx, t in enumerate(top10, 1):
+            ticker   = t.get('ticker', '')
+            price    = t.get('price', 0)
+            change   = t.get('change_pct', 0)
+            gap      = t.get('gap_pct', 0)
+            volume   = t.get('volume', 0)
+            float_sh = t.get('float_shares')
+
+            float_str = ''
+            if float_sh:
+                if float_sh < 1_000_000:
+                    float_str = ' | Float ' + '{:.0f}'.format(float_sh/1000) + 'k'
+                elif float_sh < 10_000_000:
+                    float_str = ' | Float ' + '{:.1f}'.format(float_sh/1_000_000) + 'M'
+
+            gap_str = ' | Gap ' + '{:+.0f}'.format(gap) + '%' if gap else ''
+
+            if float_sh and float_sh < 5_000_000 and abs(gap) > 20:
+                quality = ' ' + chr(128293) + chr(128293)
+            elif abs(gap) > 50 or (float_sh and float_sh < 5_000_000):
+                quality = ' ' + chr(128293)
+            else:
+                quality = ''
+
+            lines_msg.append(
+                str(idx) + '. <b>' + ticker + '</b>' + quality +
+                ' $' + '{:.2f}'.format(price) +
+                ' (' + '{:+.1f}'.format(change) + '%)' +
+                gap_str + float_str +
+                ' | vol ' + '{:.0f}'.format(volume/1000) + 'k'
+            )
+
+        lines_msg += ['', chr(9201) + ' Rynek otwiera sie za ~30 min. Przygotuj sie!']
+        from telegram_alerts import send_message
+        send_message(chr(10).join(lines_msg))
+        logger.info(f"Pre-market watchlist wyslany: {len(top10)} tickerow")
+
+    # ==================== EXTENDED HOURS ====================
+
     def run_premarket_scan(self):
         """
         Pre-market scan 8:00-8:30 CST.
@@ -1270,6 +1346,11 @@ class StockScanner:
                                 n = now_chicago()
                                 premarket_open = n.replace(hour=8, minute=0, second=0, microsecond=0)
                                 if n >= premarket_open:
+                                    # Watchlist o 8:00-8:10 CST
+                                    watchlist_end = n.replace(hour=8, minute=10, second=0, microsecond=0)
+                                    if n < watchlist_end and not getattr(self, '_watchlist_sent_today', False):
+                                        self.run_premarket_watchlist()
+                                        self._watchlist_sent_today = True
                                     self.run_premarket_scan()
                                 else:
                                     self.run_extended_scan()
