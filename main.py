@@ -132,11 +132,12 @@ class StockScanner:
         self._watch_count = {}
 
         # Dzienny licznik BUY sygnalow - Opcja C Power Windows
-        self._buy_count_today      = 0   # lacznie
-        self._buy_count_open       = 0   # 8:30-10:00
-        self._buy_count_midday     = 0   # 10:00-14:00
-        self._buy_count_power_hour = 0   # 14:00-15:00
+        self._buy_count_today      = 0
+        self._buy_count_open       = 0
+        self._buy_count_midday     = 0
+        self._buy_count_power_hour = 0
         self._buy_count_date       = None
+        self._buy_tickers_today    = set()  # jeden BUY per ticker dziennie
 
 
 
@@ -343,7 +344,14 @@ class StockScanner:
                 self._buy_count_midday     = 0
                 self._buy_count_power_hour = 0
                 self._buy_count_date       = today
+                self._buy_tickers_today    = set()
                 logger.info(f"Power Windows reset: nowy dzien {today}")
+
+            # Jeden BUY per ticker dziennie
+            if verdict == 'BUY' and ticker in self._buy_tickers_today:
+                logger.info(f"{ticker}: BUY juz wyslany dzisiaj -> WATCH")
+                result['verdict'] = 'WATCH'
+                verdict           = 'WATCH'
 
             # Limit BUY - Opcja C Power Windows
             # Poza godzinami rynkowymi = brak BUY
@@ -380,6 +388,7 @@ class StockScanner:
                         else:
                             self._buy_count_open  += 1
                             self._buy_count_today += 1
+                            self._buy_tickers_today.add(ticker)
 
                     elif open_end <= n < midday_end:
                         if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5) and not is_wysoka:
@@ -389,6 +398,7 @@ class StockScanner:
                         else:
                             self._buy_count_midday += 1
                             self._buy_count_today  += 1
+                            self._buy_tickers_today.add(ticker)
 
                     elif midday_end <= n < power_end:
                         if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3) and not is_wysoka:
@@ -398,8 +408,10 @@ class StockScanner:
                         else:
                             self._buy_count_power_hour += 1
                             self._buy_count_today      += 1
+                            self._buy_tickers_today.add(ticker)
                     else:
                         self._buy_count_today += 1
+                        self._buy_tickers_today.add(ticker)
 
             # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
             # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
