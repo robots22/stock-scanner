@@ -218,36 +218,42 @@ def cmd_stats():
     if not conn:
         return "❌ Błąd połączenia z bazą danych."
     try:
-        c   = conn.cursor()
-        from datetime import timezone
-        ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        # Uzywamy datetime('now', '-24 hours') zamiast stringa
-        # zeby uniknac problemow z timezone w SQLite
+        c = conn.cursor()
+        today = now_chicago().strftime('%Y-%m-%d')
         c.execute('''
             SELECT verdict,
                    COUNT(*) as cnt,
                    AVG(outcome_1h)  as avg_1h,
                    AVG(outcome_4h)  as avg_4h,
                    AVG(outcome_24h) as avg_24h,
-                   SUM(CASE WHEN outcome_1h > 0 THEN 1 ELSE 0 END) as wins_1h
+                   SUM(CASE WHEN outcome_1h > 0 THEN 1 ELSE 0 END) as wins_1h,
+                   SUM(CASE WHEN outcome_1h IS NOT NULL THEN 1 ELSE 0 END) as has_outcome
             FROM signals
-            WHERE outcome_1h IS NOT NULL
+            WHERE DATE(timestamp) = ?
             GROUP BY verdict
-        ''')
+        ''', (today,))
         rows = c.fetchall()
 
         if not rows:
-            return "📭 Brak sygnałów z wynikami z ostatnich 24h."
+            return "📭 Brak sygnałów dzisiaj."
 
-        lines = ["📊 <b>STATYSTYKI — cała historia</b>\n"]
+        lines = [f"📊 <b>STATYSTYKI — dzisiaj ({today})</b>\n"]
         for row in rows:
-            icon    = '🟢' if row['verdict'] == 'BUY' else (
-                      '🟡' if row['verdict'] == 'WATCH' else '🔴')
-            wr      = round(row['wins_1h'] / row['cnt'] * 100, 1) if row['cnt'] else 0
+            icon = '🟢' if row['verdict'] == 'BUY' else (
+                   '🟡' if row['verdict'] == 'WATCH' else (
+                   '🔴' if row['verdict'] == 'AVOID' else '⚡'))
+            has_outcome = row['has_outcome'] or 0
+            if has_outcome == 0:
+                lines.append(
+                    f"{icon} <b>{row['verdict']}</b> ({row['cnt']} sygn.)\n"
+                    f"   Wyniki jeszcze niedostępne (czekaj 1h+)"
+                )
+                continue
+            wr      = round(row['wins_1h'] / has_outcome * 100, 1) if has_outcome else 0
             avg_1h  = row['avg_1h']  or 0
             avg_24h = row['avg_24h'] or 0
             lines.append(
-                f"{icon} <b>{row['verdict']}</b> ({row['cnt']} sygn.)\n"
+                f"{icon} <b>{row['verdict']}</b> ({row['cnt']} sygn., {has_outcome} z wynikiem)\n"
                 f"   Win rate 1h: {wr}%\n"
                 f"   Avg 1h: {avg_1h:+.2f}% | Avg 24h: {avg_24h:+.2f}%"
             )

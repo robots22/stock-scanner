@@ -479,6 +479,50 @@ def close_signal(signal_id, reason):
 
 
 def get_stats():
+    """Statystyki TYLKO z dzisiejszej daty (dla dashboard/Telegram)."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        today = now_chicago().strftime('%Y-%m-%d')
+
+        c.execute("SELECT COUNT(*) FROM signals WHERE DATE(timestamp) = ?", (today,))
+        total = c.fetchone()[0]
+
+        c.execute(
+            "SELECT verdict, COUNT(*) FROM signals WHERE DATE(timestamp) = ? GROUP BY verdict",
+            (today,)
+        )
+        by_verdict = dict(c.fetchall())
+
+        c.execute('''
+            SELECT AVG(outcome_1h), AVG(outcome_4h), AVG(outcome_24h)
+            FROM signals
+            WHERE verdict = 'BUY' AND outcome_1h IS NOT NULL
+            AND DATE(timestamp) = ?
+        ''', (today,))
+        row = c.fetchone()
+        avg_outcomes = {
+            '1h':  round(row[0], 2) if row[0] else None,
+            '4h':  round(row[1], 2) if row[1] else None,
+            '24h': round(row[2], 2) if row[2] else None,
+        }
+
+        c.execute("SELECT COUNT(*) FROM signals WHERE monitoring = 1 AND closed = 0")
+        active_monitoring = c.fetchone()[0]
+
+        return {
+            'total_signals':     total,
+            'by_verdict':        by_verdict,
+            'avg_outcomes_buy':  avg_outcomes,
+            'active_monitoring': active_monitoring,
+            'date':              today,
+        }
+    finally:
+        conn.close()
+
+
+def get_stats_all_time():
+    """Statystyki z calej historii (np. dla /performance)."""
     conn = get_connection()
     try:
         c = conn.cursor()
