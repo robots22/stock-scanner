@@ -427,10 +427,11 @@ class StockScanner:
                         f" [Auto-escalacja: {self._watch_count[ticker]}x WATCH z rzędu]"
                     )
                     verdict = 'BUY'
+                    self._watch_count[ticker] = 0  # reset po eskalacji
             elif verdict == 'BUY':
-                self._watch_count.pop(ticker, None)  # reset po BUY
+                self._watch_count.pop(ticker, None)
             elif verdict == 'AVOID':
-                self._watch_count.pop(ticker, None)  # reset po AVOID
+                self._watch_count.pop(ticker, None)
 
             signal_id = save_signal(result, ticker_data,
                                     polygon_api=self.polygon)
@@ -1164,6 +1165,10 @@ class StockScanner:
         )
 
         for result, ticker_data in zip(results, top5):
+            # Po godzinach - BUY zmien na WATCH (rynek zamkniety)
+            if result.get('verdict') == 'BUY' and not is_market_open():
+                result['verdict'] = 'WATCH'
+                result['justification'] = '[After-hours] ' + result.get('justification', '')
             save_signal(result, ticker_data)
             self._send_alert(result, ticker_data)
 
