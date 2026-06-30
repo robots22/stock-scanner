@@ -72,6 +72,7 @@ from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
 from alpaca_trader import AlpacaPaperTrader
 from momentum_scan import MomentumScanner
 from float_cache import FloatCache
+from news_rss import NewsRSSScanner
 
 
 # ==================== GŁÓWNA KLASA ====================
@@ -158,6 +159,11 @@ class StockScanner:
         # Float Cache - persystowany, odswiezany co 7 dni
         self.float_cache = FloatCache(polygon_api=self.polygon)
 
+        # RSS News Scanner - GlobeNewswire + SEC EDGAR
+        self.rss_scanner   = NewsRSSScanner()
+        self.last_rss_scan = None
+        self._rss_cache    = {}
+
         # Telegram bot v2.0
         self.bot = None  # uruchamiany w run()
 
@@ -225,6 +231,7 @@ class StockScanner:
             news_cache = self.polygon.get_recent_news_tickers(hours=2, limit=100)
         except Exception as e:
             logger.warning(f"Market news scan error: {e}")
+            news_cache = {}
             # Fallback: per-ticker dla TOP 30
             for t in sorted(universe, key=lambda x: x.get('volume_ratio', 0),
                             reverse=True)[:30]:
@@ -234,6 +241,21 @@ class StockScanner:
                         news_cache[t['ticker']] = news
                 except Exception:
                     pass
+
+        # Merge z RSS cache (GlobeNewswire + SEC EDGAR)
+        # RSS jest szybszy niz Polygon o 30-90 minut
+        if self._rss_cache:
+            for ticker, articles in self._rss_cache.items():
+                if ticker not in news_cache:
+                    news_cache[ticker] = articles
+                else:
+                    # Polacz - RSS artykuly na poczatku (swiezsze)
+                    existing_urls = {a.get('article_url') for a in news_cache[ticker]}
+                    for a in articles:
+                        if a.get('article_url') not in existing_urls:
+                            news_cache[ticker].insert(0, a)
+            rss_only = sum(1 for t in self._rss_cache if t not in news_cache)
+            logger.info(f"RSS merge: +{len(self._rss_cache)} tickerow ({rss_only} tylko z RSS)")
 
         # Pobierz RSI i EMA dla TOP 20 tickerów (wczesne sygnały)
         technical_cache = {}
@@ -1299,6 +1321,16 @@ class StockScanner:
                 if paused:
                     time.sleep(30)
                     continue
+
+                # Cykl RSS (co 2 minuty) - GlobeNewswire + SEC EDGAR
+                rss_due = (self.last_rss_scan is None or
+                           (now - self.last_rss_scan).total_seconds() >= 120)
+                if rss_due:
+                    try:
+                        self._rss_cache    = self.rss_scanner.scan()
+                        self.last_rss_scan = now_chicago()
+                    except Exception as e:
+                        logger.warning(f"RSS scan error: {e}")
 
                 # Cykl UW (co 1 minutę)
                 uw_due = (self.last_uw_scan is None or
