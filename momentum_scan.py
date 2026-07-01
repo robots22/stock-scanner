@@ -44,10 +44,11 @@ EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
 
 class MomentumScanner:
 
-    def __init__(self, polygon_api, telegram_send_fn, save_signal_fn=None):
+    def __init__(self, polygon_api, telegram_send_fn, save_signal_fn=None, alpaca_trader=None):
         self.polygon        = polygon_api
         self.send            = telegram_send_fn
         self.save_signal_fn  = save_signal_fn
+        self.alpaca_trader   = alpaca_trader  # Alpaca Paper Trading
         self._alerted        = {}
         self._daily_alerts   = set()
         self._alert_date     = None
@@ -249,6 +250,24 @@ class MomentumScanner:
             # Wyslij Telegram
             message = self._format_alert(ticker_data, trigger_name, trigger_desc)
             self.send(message)
+
+            # Alpaca Paper Trading — tylko podczas sesji
+            if self.alpaca_trader and self.alpaca_trader.enabled:
+                from config import is_market_open
+                if is_market_open():
+                    price = ticker_data.get('price', 0)
+                    if price > 0:
+                        trade_result = self.alpaca_trader.buy_momentum(
+                            ticker       = ticker,
+                            entry_price  = price,
+                            trigger_name = trigger_name,
+                        )
+                        if trade_result and trade_result != 'EXISTS':
+                            logger.info(f"Tryb2 Alpaca BUY: {ticker} [{trigger_name}]")
+                        elif trade_result == 'EXISTS':
+                            logger.info(f"Tryb2: {ticker} juz w portfelu")
+                else:
+                    logger.debug(f"Tryb2: {ticker} poza sesja — bez Alpaca")
 
             self._alerted[ticker] = now_chicago()
             self._daily_alerts.add(ticker)

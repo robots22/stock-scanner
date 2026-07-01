@@ -62,7 +62,7 @@ from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
                       get_active_buy_signals, check_retrigger_conditions,
                       save_retrigger, close_signal, update_outcomes,
-                      get_stats)
+                      get_stats, save_momentum_signal)
 from telegram_alerts import (alert_signal, alert_manual, alert_retrigger, alert_take_profit,
                               send_hourly_dashboard, send_startup_message,
                               send_shutdown_message, send_presession_watchlist,
@@ -150,10 +150,12 @@ class StockScanner:
         # Alpaca Paper Trader
         self.trader = AlpacaPaperTrader()
 
-        # Momentum Scanner (Tryb 2) - bez Claude
+        # Momentum Scanner (Tryb 2) - z Alpaca execution
         self.momentum = MomentumScanner(
-            polygon_api     = self.polygon,
+            polygon_api      = self.polygon,
             telegram_send_fn = send_message,
+            save_signal_fn   = save_momentum_signal,
+            alpaca_trader    = self.trader,
         )
 
         # Float Cache - persystowany, odswiezany co 7 dni

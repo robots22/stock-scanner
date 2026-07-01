@@ -26,8 +26,9 @@ PAPER_KEY    = os.getenv('ALPACA_PAPER_KEY', '')
 PAPER_SECRET = os.getenv('ALPACA_PAPER_SECRET', '')
 PAPER_URL    = 'https://paper-api.alpaca.markets'
 
-RISK_PER_TRADE_USD = float(os.getenv('PAPER_RISK_PER_TRADE', '100'))
-MAX_POSITIONS      = int(os.getenv('PAPER_MAX_POSITIONS', '3'))
+RISK_PER_TRADE_USD      = float(os.getenv('PAPER_RISK_PER_TRADE', '100'))
+MAX_POSITIONS           = int(os.getenv('PAPER_MAX_POSITIONS', '3'))
+MAX_POSITIONS_MOMENTUM  = int(os.getenv('PAPER_MAX_POSITIONS_MOMENTUM', '20'))
 
 
 class AlpacaPaperTrader:
@@ -47,6 +48,7 @@ class AlpacaPaperTrader:
         })
         self._pending_trailing = {}
         self._submitted_orders = set()  # tickery z juz zlozonym zleceniem BUY
+        self._momentum_orders  = set()  # tickery Trybu 2
         logger.info("AlpacaPaperTrader zainicjowany — Paper Trading")
 
     def _get(self, endpoint):
@@ -291,6 +293,108 @@ class AlpacaPaperTrader:
                 for p in positions
             ]
         }
+
+    def count_momentum_positions(self):
+        """Liczy pozycje otwarte przez Tryb 2."""
+        return len(self._momentum_orders)
+
+    def buy_momentum(self, ticker, entry_price, trigger_name):
+        """
+        Otwiera pozycje BUY dla Trybu 2 (momentum).
+
+        Risk management:
+          Stop loss:     -8% od entry
+          Take profit 1: +20% (50% pozycji)
+          Take profit 2: +30% (25% pozycji)
+          Take profit 3: +40% (25% pozycji) lub trailing stop 6%
+
+        Max 20 pozycji (paper trading / learning).
+        Jeden BUY per ticker dziennie.
+        Tylko podczas sesji rynkowej.
+        """
+        if not self.enabled:
+            return None
+
+        # Sprawdz limit pozycji Trybu 2
+        if self.count_momentum_positions() >= MAX_POSITIONS_MOMENTUM:
+            logger.info(f"Tryb2: max pozycji ({MAX_POSITIONS_MOMENTUM}) osiagniety — pomijam {ticker}")
+            return None
+
+        # Jeden BUY per ticker dziennie
+        if ticker in self._submitted_orders:
+            logger.info(f"Tryb2: {ticker} juz zlozone dzisiaj — pomijam")
+            return None
+
+        # Sprawdz czy pozycja istnieje
+        if self.get_position(ticker):
+            logger.info(f"Tryb2: {ticker} juz w portfelu — pomijam")
+            return 'EXISTS'
+
+        # Qty z ryzyka per trade
+        qty = max(2, int(RISK_PER_TRADE_USD / entry_price))
+        qty = min(qty, int(RISK_PER_TRADE_USD * 3 / entry_price))
+
+        # SL i TP
+        stop_loss = round(entry_price * 0.92, 2)   # -8%
+        tp1       = round(entry_price * 1.20, 2)   # +20%
+        tp2       = round(entry_price * 1.30, 2)   # +30%
+        tp3       = round(entry_price * 1.40, 2)   # +40%
+
+        # Podzial qty: 50% @ TP1, 25% @ TP2, 25% trailing
+        qty_tp1   = max(1, qty // 2)
+        qty_tp2   = max(1, qty // 4)
+        qty_trail = qty - qty_tp1 - qty_tp2
+
+        order = {
+            'symbol':        ticker,
+            'qty':           str(qty),
+            'side':          'buy',
+            'type':          'market',
+            'time_in_force': 'day',
+        }
+
+        result = self._post('/v2/orders', order)
+        if not result:
+            return None
+
+        self._submitted_orders.add(ticker)
+        if not hasattr(self, '_momentum_orders'):
+            self._momentum_orders = set()
+        self._momentum_orders.add(ticker)
+
+        logger.info(
+            f"Tryb2 BUY: {ticker} x{qty} @ ~${entry_price:.2f} | "
+            f"SL ${stop_loss} | TP1 ${tp1}(x{qty_tp1}) "
+            f"TP2 ${tp2}(x{qty_tp2}) Trail 6%(x{qty_trail}) "
+            f"[{trigger_name}]"
+        )
+
+        # Zloz zlecenia exit po wykonaniu BUY
+        import time
+        time.sleep(2)
+
+        # TP1: 50% @ +20%
+        self._submit_take_profit(ticker, str(qty_tp1), str(tp1))
+        time.sleep(0.5)
+
+        # TP2: 25% @ +30%
+        pos = self.get_position(ticker)
+        if pos:
+            avail = int(float(pos.get('qty_available') or pos.get('qty') or qty_tp2))
+            if avail >= qty_tp2:
+                self._submit_take_profit(ticker, str(qty_tp2), str(tp2))
+                time.sleep(0.5)
+
+        # Trailing stop 6%: reszta
+        if qty_trail > 0:
+            pos = self.get_position(ticker)
+            if pos:
+                avail = int(float(pos.get('qty_available') or pos.get('qty') or qty_trail))
+                actual_trail = min(qty_trail, avail)
+                if actual_trail > 0:
+                    self._submit_trailing_stop(ticker, str(actual_trail), '6.0')
+
+        return result
 
 
 if __name__ == "__main__":
