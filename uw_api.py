@@ -31,6 +31,11 @@ from config import logger, CONFIG, UNUSUAL_WHALES_KEY, now_chicago
 # Włącz logowanie surowych danych UW — ustaw RAW_LOG=True w .env
 RAW_LOG = os.getenv('UW_RAW_LOG', 'False').lower() == 'true'
 
+# KILL SWITCH: UW_ENABLED=false w .env wylacza wszystkie API calls
+# Zwraca puste dane bez uderzania w subskrypcje UW.
+# Zmieniaj tylko przez .env, kod zostaje bez zmian dla latwego przywrocenia.
+UW_ENABLED = os.getenv('UW_ENABLED', 'True').lower() != 'false'
+
 UW_BASE_URL = "https://api.unusualwhales.com"
 UW_TIMEOUT  = 15
 
@@ -38,9 +43,23 @@ UW_TIMEOUT  = 15
 class UnusualWhalesAPI:
     """
     Wrapper dla Unusual Whales API v2.0
+
+    KILL SWITCH: gdy UW_ENABLED=false w .env, klasa dziala jako no-op —
+    kazda metoda zwraca pusta liste/dict, zero HTTP requests.
+    Kod uzywajacy tej klasy w main.py NIE wymaga zmian.
     """
 
     def __init__(self):
+        self.enabled = UW_ENABLED
+
+        if not self.enabled:
+            self.session = None
+            self._cache     = {}
+            self._cache_ttl = {}
+            self.total_calls = 0
+            logger.info("UnusualWhalesAPI: KILL SWITCH aktywny (UW_ENABLED=false) — no-op mode")
+            return
+
         if not UNUSUAL_WHALES_KEY:
             raise ValueError(
                 "Brak UNUSUAL_WHALES_KEY w pliku .env"
@@ -74,6 +93,10 @@ class UnusualWhalesAPI:
     # ==================== HTTP ====================
 
     def _get(self, endpoint, params=None, cache_ttl=60):
+        # KILL SWITCH — zero HTTP calls
+        if not self.enabled:
+            return None
+
         cache_key = f"{endpoint}:{str(params)}"
         cached    = self._cache_get(cache_key)
         if cached is not None:
