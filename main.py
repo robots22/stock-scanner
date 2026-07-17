@@ -738,25 +738,44 @@ class StockScanner:
 
     def _send_alert(self, result, ticker_data):
         """
-        Wysyła alert z cooldown — zapobiega duplikatom.
+        Wysyla alert z dedup na dzien — zapobiega duplikatom.
+
+        Regula spojna z dedup DB:
+          BUY:        1 alert per ticker/dzien (bez wzgledu na cooldown)
+          MOMENTUM:   1 alert per ticker/dzien
+          WATCH:      alert gdy PIERWSZY dzis LUB gdy poprzedni alert byl
+                      innego verdyktu (WATCH → AVOID = wysylamy)
+          AVOID:      j.w. dla AVOID
+
+        Reset o polnocy CST.
         """
         ticker  = result.get('ticker', '')
         verdict = result.get('verdict', '')
-        key     = f"{ticker}_{verdict}"
 
-        # Sprawdź cooldown
-        last_alert = self.alert_cooldown.get(key)
-        if last_alert:
-            elapsed = (now_chicago() - last_alert).total_seconds()
-            if elapsed < CONFIG['duplicate_alert_cooldown']:
-                logger.info(f"Alert cooldown: {ticker} {verdict} "
-                            f"({int(elapsed)}s temu)")
+        # Reset o polnocy CST
+        today = now_chicago().date()
+        if getattr(self, '_alerts_date', None) != today:
+            self._alerts_today  = {}    # {ticker: last_verdict_alerted}
+            self._alerts_date   = today
+
+        prev_alert = self._alerts_today.get(ticker)
+
+        # BUY / MOMENTUM: max 1 per ticker/dzien
+        if verdict in ('BUY', 'MOMENTUM'):
+            if prev_alert == verdict:
+                logger.info(f"Alert dedup: {ticker} {verdict} juz wyslany dzis — pomijam")
+                return
+
+        # WATCH / AVOID: tylko gdy zmiana verdyktu
+        elif verdict in ('WATCH', 'AVOID'):
+            if prev_alert == verdict:
+                logger.info(f"Alert dedup: {ticker} {verdict} bez zmiany od ostatniego — pomijam")
                 return
 
         sent = alert_signal(result, ticker_data)
         if sent:
-            self.alert_cooldown[key] = now_chicago()
-            self.alert_count += 1
+            self._alerts_today[ticker] = verdict
+            self.alert_count          += 1
 
     # ==================== DASHBOARD ====================
 

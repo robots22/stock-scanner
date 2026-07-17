@@ -21,6 +21,61 @@ def get_connection():
     return conn
 
 
+def _last_signal_today(conn, ticker, verdict_filter=None):
+    """
+    Zwraca ostatni sygnal dla tickera z DZISIAJ (Chicago).
+    Jesli verdict_filter podany — tylko sygnaly tego verdyktu.
+    Zwraca (verdict, timestamp) lub (None, None) gdy brak.
+    """
+    today = now_chicago().strftime('%Y-%m-%d')
+    c = conn.cursor()
+    if verdict_filter:
+        c.execute('''
+            SELECT verdict, timestamp FROM signals
+            WHERE ticker=? AND DATE(timestamp)=? AND verdict=?
+            ORDER BY timestamp DESC LIMIT 1
+        ''', (ticker, today, verdict_filter))
+    else:
+        c.execute('''
+            SELECT verdict, timestamp FROM signals
+            WHERE ticker=? AND DATE(timestamp)=?
+            ORDER BY timestamp DESC LIMIT 1
+        ''', (ticker, today))
+    row = c.fetchone()
+    if row:
+        return row['verdict'], row['timestamp']
+    return None, None
+
+
+def _should_skip_signal(conn, ticker, verdict):
+    """
+    Reguly dedup na zapis (spojne z dedup_history.py):
+      MOMENTUM: pierwszy per ticker/dzien
+      BUY:      pierwszy per ticker/dzien
+      WATCH:    zapisz gdy pierwszy dzis LUB gdy poprzedni verdict != WATCH
+      AVOID:    zapisz gdy pierwszy dzis LUB gdy poprzedni verdict != AVOID
+
+    Zwraca True gdy zapis nalezy POMINAC.
+    """
+    if verdict == 'MOMENTUM':
+        prev_v, _ = _last_signal_today(conn, ticker, verdict_filter='MOMENTUM')
+        return prev_v is not None
+
+    if verdict == 'BUY':
+        prev_v, _ = _last_signal_today(conn, ticker, verdict_filter='BUY')
+        return prev_v is not None
+
+    if verdict in ('WATCH', 'AVOID'):
+        # Bierzemy POPRZEDNI ostatni sygnal (dowolny verdict)
+        prev_v, _ = _last_signal_today(conn, ticker)
+        if prev_v is None:
+            return False  # pierwszy dzis — zapisz
+        # Pomijamy gdy poprzedni ma taki sam verdict
+        return prev_v == verdict
+
+    return False
+
+
 def init_db():
     conn = get_connection()
     try:
@@ -89,6 +144,13 @@ def save_signal(result, ticker_data, polygon_api=None):
         c = conn.cursor()
 
         verdict    = result.get('verdict', 'WATCH')
+        ticker     = result.get('ticker', '')
+
+        # DEDUP na zapis — nie zapisuj duplikatow zgodnie z reguly
+        if _should_skip_signal(conn, ticker, verdict):
+            logger.debug(f"DB dedup: pomijam {verdict} {ticker} (duplikat tego samego dnia)")
+            return None
+
         monitoring = 1 if verdict == 'BUY' else 0
 
         monitoring_end = None
@@ -179,9 +241,17 @@ def save_momentum_signal(ticker_data, trigger_name, trigger_desc):
     Uzywa tej samej tabeli signals z verdict='MOMENTUM'.
     Bez monitoringu, bez stop_loss/take_profit (informacyjny).
     Sluzy do przyszlej analizy self-learning.
+
+    DEDUP: tylko pierwszy alert per ticker/dzien.
     """
     conn = get_connection()
     try:
+        ticker = ticker_data.get('ticker', '')
+
+        # DEDUP: pomijamy jesli juz jest MOMENTUM dla tego tickera dzisiaj
+        if _should_skip_signal(conn, ticker, 'MOMENTUM'):
+            return None
+
         c = conn.cursor()
         c.execute('''
             INSERT INTO signals (
