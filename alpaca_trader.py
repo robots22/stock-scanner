@@ -76,10 +76,32 @@ class AlpacaPaperTrader:
     def _delete(self, endpoint):
         try:
             r = self.session.delete(f"{PAPER_URL}{endpoint}", timeout=10)
-            return r.status_code in (200, 204)
-        except Exception as e:
-            logger.error(f"Alpaca DELETE error: {e}")
+            if r.status_code in (200, 204):
+                return True
+            logger.warning(f"Alpaca DELETE {endpoint}: {r.status_code} — {r.text[:200]}")
             return False
+        except Exception as e:
+            logger.error(f"Alpaca DELETE error {endpoint}: {e}")
+            return False
+
+    def cancel_open_sell_orders(self, ticker):
+        """
+        Anuluje wszystkie otwarte SELL orders dla tickera.
+        Wymagane przed DELETE /v2/positions — Alpaca odrzuca zamkniecie
+        pozycji gdy sa na niej wiszace sell orders (trailing_stop, limit).
+        Zwraca liczbe anulowanych.
+        """
+        try:
+            orders = self._get(f'/v2/orders?status=open&symbols={ticker}&limit=100') or []
+            n = 0
+            for o in orders:
+                if o.get('side') == 'sell':
+                    if self._delete(f"/v2/orders/{o.get('id')}"):
+                        n += 1
+            return n
+        except Exception as e:
+            logger.warning(f"cancel_open_sell_orders {ticker}: {e}")
+            return 0
 
     def get_account(self):
         return self._get('/v2/account')
@@ -149,19 +171,24 @@ class AlpacaPaperTrader:
             self._submitted_orders.add(ticker)
             logger.info(f"Paper BUY: {ticker} x{qty} @ ~${entry_price:.2f} | trail {trail_pct}%")
 
-            # Partial exit: 50% @ TP, trailing stop na reszte
-            half_qty = max(1, qty // 2)
-            rest_qty = qty - half_qty
+            # Partial exit: 50%@+5% / 30%@+8% / 20% trailing 4%
+            half_qty   = max(1, qty // 2)
+            thirty_qty = max(1, qty * 3 // 10)
+            rest_qty   = qty - half_qty - thirty_qty
 
-            if take_profit and take_profit > entry_price:
-                # 50% sell limit @ TP
-                self._submit_take_profit(ticker, str(half_qty), str(round(take_profit, 2)))
-                # 50% trailing stop
-                if rest_qty > 0:
-                    self._submit_trailing_stop(ticker, str(rest_qty), str(trail_pct))
-            else:
-                # Bez TP: trailing stop na calą pozycje
-                self._submit_trailing_stop(ticker, str(qty), str(trail_pct))
+            tp1 = round(entry_price * 1.05, 2)  # +5%
+            tp2 = round(entry_price * 1.08, 2)  # +8%
+
+            # TP1: 50% @ +5%
+            self._submit_take_profit(ticker, str(half_qty), str(tp1))
+
+            # TP2: 30% @ +8%
+            if thirty_qty > 0:
+                self._submit_take_profit(ticker, str(thirty_qty), str(tp2))
+
+            # 20% trailing stop 4%
+            if rest_qty > 0:
+                self._submit_trailing_stop(ticker, str(rest_qty), str(trail_pct))
 
             return result
         return None
@@ -237,7 +264,15 @@ class AlpacaPaperTrader:
             return False
 
     def sell(self, ticker, reason='SELL_SIGNAL'):
-        """Zamyka pozycje dla tickera."""
+        """
+        Zamyka pozycje dla tickera.
+
+        Kolejnosc dzialan (naprawia problem "cleanup failed"):
+          1. Anulowanie wszystkich otwartych sell orders (trailing/limit)
+          2. Sleep 1s zeby Alpaca zwolnilo qty_available
+          3. DELETE /v2/positions/{ticker}
+          4. Fallback: market sell dostepnej ilosci gdy DELETE fail
+        """
         if not self.enabled:
             return None
 
@@ -250,12 +285,48 @@ class AlpacaPaperTrader:
         pnl     = float(position.get('unrealized_pl', 0))
         pnl_pct = float(position.get('unrealized_plpc', 0)) * 100
 
-        result = self._delete(f'/v2/positions/{ticker}')
-        if result:
-            self._submitted_orders.discard(ticker)  # pozwol na nowy BUY
-            logger.info(f"Paper SELL: {ticker} @ ${price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.1f}%) | {reason}")
-            return {'ticker': ticker, 'pnl': pnl, 'pnl_pct': pnl_pct}
-        return None
+        # 1. Anuluj wszystkie sell orders blokujace pozycje
+        cancelled = self.cancel_open_sell_orders(ticker)
+        if cancelled:
+            logger.debug(f"sell({ticker}): anulowano {cancelled} sell orders")
+            import time
+            time.sleep(3)  # Alpaca potrzebuje czasu na 'pending cancel' -> zwolnienie qty
+
+        # 2. DELETE pozycji (z retry)
+        import time
+        result = False
+        for attempt in range(3):
+            result = self._delete(f'/v2/positions/{ticker}')
+            if result:
+                break
+            time.sleep(2)  # czekaj i probuj ponownie
+
+        # 3. Fallback: gdy DELETE fail, sprobuj market sell qty_available
+        if not result:
+            pos_fresh = self.get_position(ticker)
+            if pos_fresh:
+                avail = int(float(pos_fresh.get('qty_available', 0) or 0))
+                if avail > 0:
+                    order = {
+                        'symbol':        ticker,
+                        'qty':           str(avail),
+                        'side':          'sell',
+                        'type':          'market',
+                        'time_in_force': 'day',
+                    }
+                    fallback = self._post('/v2/orders', order)
+                    if fallback:
+                        logger.info(f"Paper SELL (fallback market x{avail}): {ticker} | {reason}")
+                        self._submitted_orders.discard(ticker)
+                        self._momentum_orders.discard(ticker)
+                        return {'ticker': ticker, 'pnl': pnl, 'pnl_pct': pnl_pct}
+            logger.warning(f"Paper SELL FAIL: {ticker} (DELETE i fallback nie zadzialaly)")
+            return None
+
+        self._submitted_orders.discard(ticker)
+        self._momentum_orders.discard(ticker)
+        logger.info(f"Paper SELL: {ticker} @ ${price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.1f}%) | {reason}")
+        return {'ticker': ticker, 'pnl': pnl, 'pnl_pct': pnl_pct}
 
     def get_portfolio_summary(self):
         """Podsumowanie portfela Paper."""

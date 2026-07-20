@@ -766,11 +766,10 @@ class StockScanner:
                 logger.info(f"Alert dedup: {ticker} {verdict} juz wyslany dzis — pomijam")
                 return
 
-        # WATCH / AVOID: tylko gdy zmiana verdyktu
+        # WATCH / AVOID: DB-only, zero Telegram (dane nie pokazuja edge)
         elif verdict in ('WATCH', 'AVOID'):
-            if prev_alert == verdict:
-                logger.info(f"Alert dedup: {ticker} {verdict} bez zmiany od ostatniego — pomijam")
-                return
+            logger.debug(f"Alert skip: {ticker} {verdict} -> DB-only (bez Telegram)")
+            return
 
         sent = alert_signal(result, ticker_data)
         if sent:
