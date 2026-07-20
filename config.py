@@ -86,10 +86,10 @@ CONFIG = {
     'max_tickers_for_claude': 5,
 
     # Max sygnalow BUY dziennie - Opcja C (Power Windows)
-    'max_buy_signals_per_day': 15,
-    'max_buy_open':       7,   # 8:30-10:00 CST
-    'max_buy_midday':     5,   # 10:00-14:00 CST
-    'max_buy_power_hour': 3,   # 14:00-15:00 CST
+    'max_buy_signals_per_day': 5,
+    'max_buy_open':       3,   # 8:30-10:00 CST
+    'max_buy_midday':     1,   # 10:00-14:00 CST
+    'max_buy_power_hour': 1,   # 14:00-15:00 CST
 
     # Minimalny score pre-filtra żeby ticker trafił do Claude
     # Ticker musi mieć przynajmniej jeden sygnał TIER 1 lub 2

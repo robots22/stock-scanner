@@ -20,23 +20,23 @@ MOMENTUM_CONFIG = {
     'trigger_a_gap':       50.0,
     'trigger_a_vol':       500_000,
     'trigger_b_max_price': 1.00,
-    'trigger_b_vol':       5_000_000,
-    'trigger_b_gap':       5.0,
-    'trigger_b_change':    15.0,
+    'trigger_b_vol':       5_000_000,    # bylo 5M — zostaje
+    'trigger_b_gap':       15.0,         # bylo 5.0
+    'trigger_b_change':    25.0,         # bylo 15.0
     'trigger_c_min_price': 1.00,
     'trigger_c_max_price': 5.00,
-    'trigger_c_vol':       3_000_000,
-    'trigger_c_gap':       10.0,
-    'trigger_c_change':    20.0,
+    'trigger_c_vol':       5_000_000,    # bylo 3M
+    'trigger_c_gap':       15.0,         # bylo 10.0
+    'trigger_c_change':    25.0,         # bylo 20.0
     'trigger_d_float':     5_000_000,
-    'trigger_d_vol':       1_000_000,
+    'trigger_d_vol':       2_000_000,    # bylo 1M
     'trigger_e_rvol':      100.0,
     'min_price':           0.10,
     'max_price':           20.0,
-    'min_volume':          500_000,
+    'min_volume':          2_000_000,    # bylo 500k
     'require_positive_change': True,
     'cooldown_min':        15,
-    'max_alerts_per_cycle': 5,
+    'max_alerts_per_cycle': 3,
 }
 
 EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
