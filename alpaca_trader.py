@@ -195,6 +195,9 @@ class AlpacaPaperTrader:
 
     def _submit_trailing_stop(self, ticker, qty, trail_pct):
         """Sklada trailing stop order dla otwartej pozycji."""
+        if int(float(qty)) <= 0:
+            logger.debug(f"Trailing stop {ticker}: qty=0 — pomijam")
+            return False
         import time
         # Poczekaj az BUY zostanie wykonany
         for attempt in range(3):
