@@ -699,6 +699,82 @@ def check_reminders():
 
 # ==================== GŁÓWNA PĘTLA BOTA ====================
 
+def cmd_sell(ticker):
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return "Uzycie: /sell TICKER"
+    try:
+        from alpaca_trader import AlpacaPaperTrader
+        trader = AlpacaPaperTrader()
+        if not trader.enabled:
+            return "Alpaca Paper wylaczony"
+        if not trader.get_position(ticker):
+            return f"{ticker}: brak pozycji"
+        result = trader.sell(ticker, reason='manual_telegram')
+        if result:
+            return f"<b>SELL {ticker}</b>\nP&L: ${result['pnl']:+.2f} ({result['pnl_pct']:+.1f}%)"
+        return f"{ticker}: SELL nie powiodl sie"
+    except Exception as e:
+        return f"Blad: {e}"
+
+
+def cmd_news(ticker):
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return "Uzycie: /news TICKER"
+    try:
+        from polygon_api import PolygonAPI
+        data = PolygonAPI()._get('/v2/reference/news',
+                                 params={'ticker': ticker, 'limit': 5, 'order': 'desc'})
+        if not data or not data.get('results'):
+            return f"{ticker}: brak newsow"
+        lines = [f"<b>News {ticker}:</b>"]
+        for n in data['results'][:5]:
+            title = (n.get('title') or '')[:100]
+            pub = (n.get('published_utc') or '')[:16]
+            lines.append(f"- <i>{pub}</i> {title}")
+        return '\n'.join(lines)
+    except Exception as e:
+        return f"Blad: {e}"
+
+
+def cmd_test(ticker):
+    ticker = (ticker or '').strip().upper()
+    if not ticker:
+        return "Uzycie: /test TICKER"
+    try:
+        from polygon_api import PolygonAPI
+        from momentum_scan import MomentumScanner
+        p = PolygonAPI()
+        snap = p._get(f'/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}')
+        if not snap or not snap.get('ticker'):
+            return f"{ticker}: brak danych"
+        t = snap['ticker']
+        day = t.get('day', {}) or {}
+        prev = t.get('prevDay', {}) or {}
+        prev_close = prev.get('c', 0) or 0
+        open_p = day.get('o', 0) or 0
+        close_p = day.get('c', 0) or 0
+        volume = day.get('v', 0) or 0
+        vwap = day.get('vw', 0) or 0
+        gap = ((open_p - prev_close) / prev_close * 100) if prev_close else 0
+        chg = ((close_p - prev_close) / prev_close * 100) if prev_close else 0
+        collected = []
+        m = MomentumScanner(polygon_api=p, telegram_send_fn=collected.append)
+        m.scan([{
+            'ticker': ticker, 'price': close_p or open_p,
+            'change_pct': chg, 'volume': volume,
+            'volume_ratio': 0, 'gap_pct': gap,
+            'float_shares': 0, 'vwap': vwap,
+            'high': day.get('h', 0), 'low': day.get('l', 0),
+        }])
+        if collected:
+            return f"<b>Tryb 2 zareaguje na {ticker}:</b>\n\n" + collected[0][:900]
+        return (f"<b>{ticker}:</b> Tryb 2 nie reaguje\n"
+                f"cena ${close_p:.2f} chg{chg:+.1f}% gap{gap:+.1f}% vol{volume:,}")
+    except Exception as e:
+        return f"Blad: {e}"
+
 def run_bot():
     logger.info("Telegram bot uruchomiony.")
     offset    = 0
@@ -779,6 +855,12 @@ def run_bot():
                     reply = cmd_report()
                 elif cmd == '/cleardb':
                     reply = cmd_cleardb()
+                elif cmd == '/sell':
+                    reply = cmd_sell(args)
+                elif cmd == '/news':
+                    reply = cmd_news(args)
+                elif cmd == '/test':
+                    reply = cmd_test(args)
                 elif cmd == '/analyze':
                     reply = cmd_analyze(args)
                 elif cmd == '/start':
