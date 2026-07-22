@@ -240,3 +240,8 @@ backtest_*.json
 database.py.bak_20260721_230646
 main.py.bak_20260721_230646
 scanner.db.pre_dedup_20260716_200551.bak
+float_cache.json
+uw_backup_*.json
+*.bak_*
+patch_*.py
+=*
