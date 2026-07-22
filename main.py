@@ -131,6 +131,8 @@ class StockScanner:
 
         # WATCH escalation tracker {ticker: count}
         self._watch_count = {}
+        self._watch_saved_today = {}
+        self._watch_saved_date  = None
 
         # Dzienny licznik BUY sygnalow - Opcja C Power Windows
         self._buy_count_today      = 0
@@ -441,8 +443,37 @@ class StockScanner:
             else:
                 self._watch_count.pop(ticker, None)
 
-            signal_id = save_signal(result, ticker_data,
-                                    polygon_api=self.polygon)
+            # Redukcja zapisow WATCH/AVOID (22.07.2026)
+            # AVOID: zero DB - dane pokazaly zerowy edge (WR 45.6%, avg +0.19%)
+            # WATCH: max 3/dzien - tylko najwyzsze score
+            _skip_save = False
+            if verdict == 'AVOID':
+                _skip_save = True
+            elif verdict == 'WATCH':
+                today = now_chicago().date()
+                if self._watch_saved_date != today:
+                    self._watch_saved_today = {}
+                    self._watch_saved_date  = today
+                current_score = ticker_data.get('score', 0) or 0
+                if ticker in self._watch_saved_today:
+                    _skip_save = True
+                elif len(self._watch_saved_today) >= 3:
+                    min_score = min(self._watch_saved_today.values())
+                    if current_score <= min_score:
+                        _skip_save = True
+                    else:
+                        weakest = min(self._watch_saved_today,
+                                      key=self._watch_saved_today.get)
+                        self._watch_saved_today.pop(weakest)
+                        self._watch_saved_today[ticker] = current_score
+                else:
+                    self._watch_saved_today[ticker] = current_score
+
+            if _skip_save:
+                signal_id = None
+            else:
+                signal_id = save_signal(result, ticker_data,
+                                        polygon_api=self.polygon)
             # Dodaj SL/TP do result dla alertu Telegram
             if result.get('verdict') == 'BUY' and signal_id:
                 try:
