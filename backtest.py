@@ -1,437 +1,452 @@
 #!/usr/bin/env python3
 """
-STOCK SCANNER - PLIK 8: BACKTESTING
-Zapisz jako backtest.py w folderze stock-scanner
+BACKTEST MULTI-STRATEGY na 6 miesiecy historii Polygon
 
-Zadanie:
-- Symuluje działanie systemu na danych historycznych
-- Sprawdza trafność sygnałów pre-filtra
-- Mierzy jakość werdyktów Claude'a (w trybie DEMO: mock)
-- Generuje raport wyników
+Strategie testowane:
+
+1. SHORT_GAP_FADE:  gap >= 50%, short at open
+   SL -20% | TP +25%
+
+2. LONG_GAP_SMALL:  gap 10-50%, vol >= 2M, long at open
+   SL -5% | TP +8%
+
+3. LONG_NANO_RUNNER: cena < $1, vol >= 5M, chg >= 15%, long at open
+   SL -8% | TP +20%
+
+4. LONG_MICRO_BREAK: cena $1-5, vol >= 5M, chg >= 20%, long at open
+   SL -6% | TP +15%
+
+5. LONG_LOWFLOAT:   float < 5M (estymowany z market cap), vol >= 2M, long
+   SL -8% | TP +15%
+
+6. LONG_VWAP_RECLAIM: gap 5-30%, open below VWAP, reclaim VWAP w pierwszych 30min
+   SL -3% | TP +8%
+
+Kazda strategia: WR, avg PnL, best/worst, symulacja SL/TP, per-day frequency.
+
+Polygon Advanced: unlimited calls, adjusted=false.
 
 Uruchomienie:
-    python backtest.py
+  python3 backtest.py
+
+Czas: ~20-30 minut (2000-3000 API calls)
 """
 
-import random
 import json
-from datetime import datetime, timedelta
-from collections import defaultdict
-
-from config import logger, CONFIG, now_chicago
-from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
-from pre_filter import get_top_tickers
-from claude_analyst import ClaudeAnalyst
-from database import init_db, save_signal, get_stats
-
-
-# ==================== GENERATOR DANYCH HISTORYCZNYCH ====================
-
-class HistoricalDataGenerator:
-    """
-    Generuje symulowane dane historyczne dla backtestingu.
-    W trybie LIVE zastąpiony przez prawdziwe dane z Polygon
-    (Polygon Starter ma 5 lat historii).
-    """
-
-    def __init__(self, days=30):
-        self.days    = days
-        self.polygon = MockPolygon()
-        self.uw      = MockUnusualWhales()
-        self.fh      = MockFinnhub()
-
-    def generate_session(self, date):
-        """
-        Generuje dane dla jednej sesji tradingowej.
-        Zwraca universe tickerów z danymi jak w prawdziwym skanie.
-        """
-        # Resetuj ceny dla każdej sesji (różne dni = różne ceny)
-        random.seed(date.toordinal())  # reprodukowalne dane dla tej samej daty
-        self.polygon._init_prices()
-
-        universe = self.polygon.get_universe()
-
-        # Dodaj dane Finnhub
-        for t in universe:
-            ticker       = t['ticker']
-            t['earnings'] = self.fh.get_earnings_calendar(ticker)
-            t['insider']  = self.fh.get_insider_transactions(ticker)
-
-        dark_pool = self.uw.get_dark_pool_flow()
-
-        finnhub_cache = {}
-        for t in universe:
-            ticker = t['ticker']
-            if t.get('earnings') or t.get('insider'):
-                finnhub_cache[ticker] = {
-                    'earnings': t['earnings'],
-                    'insider':  t['insider'],
-                }
-
-        return universe, dark_pool, finnhub_cache
-
-    def simulate_price_outcome(self, entry_price, verdict):
-        """
-        Symuluje cenę po 1h, 4h, 24h od sygnału.
-        W trybie DEMO używa losowych ale realistycznych ruchów.
-        W trybie LIVE: prawdziwe ceny z Polygon.
-        """
-        # BUY sygnały mają lekką przewagę (założenie optymistyczne)
-        # W prawdziwym backteście używamy rzeczywistych cen
-        if verdict == 'BUY':
-            bias = 0.5  # lekki bias w górę
-        elif verdict == 'AVOID':
-            bias = -0.5  # lekki bias w dół
-        else:
-            bias = 0.0
-
-        outcome_1h  = random.gauss(bias, 2.5)   # średnia ±2.5%
-        outcome_4h  = random.gauss(bias * 2, 4)  # większa zmienność
-        outcome_24h = random.gauss(bias * 3, 7)  # jeszcze większa
-
-        return {
-            '1h':  round(outcome_1h, 2),
-            '4h':  round(outcome_4h, 2),
-            '24h': round(outcome_24h, 2),
-        }
-
-
-# ==================== METRYKI ====================
-
-class BacktestMetrics:
-    """Zbiera i liczy metryki backtestingu"""
-
-    def __init__(self):
-        self.signals    = []
-        self.by_verdict = defaultdict(list)
-
-    def add_signal(self, ticker, verdict, confidence, entry_price, outcomes):
-        """Dodaje sygnał do metryk"""
-        record = {
-            'ticker':     ticker,
-            'verdict':    verdict,
-            'confidence': confidence,
-            'price':      entry_price,
-            'outcome_1h':  outcomes['1h'],
-            'outcome_4h':  outcomes['4h'],
-            'outcome_24h': outcomes['24h'],
-            'win_1h':      outcomes['1h'] > 0,
-            'win_4h':      outcomes['4h'] > 0,
-            'win_24h':     outcomes['24h'] > 0,
-        }
-        self.signals.append(record)
-        self.by_verdict[verdict].append(record)
-
-    def compute(self):
-        """Liczy wszystkie metryki"""
-        if not self.signals:
-            return {}
-
-        results = {
-            'total_signals': len(self.signals),
-            'by_verdict':    {},
-        }
-
-        for verdict, signals in self.by_verdict.items():
-            if not signals:
-                continue
-
-            outcomes_1h  = [s['outcome_1h']  for s in signals]
-            outcomes_4h  = [s['outcome_4h']  for s in signals]
-            outcomes_24h = [s['outcome_24h'] for s in signals]
-
-            win_rate_1h  = sum(1 for s in signals if s['win_1h'])  / len(signals) * 100
-            win_rate_4h  = sum(1 for s in signals if s['win_4h'])  / len(signals) * 100
-            win_rate_24h = sum(1 for s in signals if s['win_24h']) / len(signals) * 100
-
-            # Sygnały z wysoką pewnością
-            high_conf = [s for s in signals if s['confidence'] == 'WYSOKA']
-            high_conf_winrate = 0
-            if high_conf:
-                high_conf_winrate = (sum(1 for s in high_conf if s['win_1h'])
-                                     / len(high_conf) * 100)
-
-            results['by_verdict'][verdict] = {
-                'count':             len(signals),
-                'avg_outcome_1h':    round(sum(outcomes_1h)  / len(outcomes_1h),  2),
-                'avg_outcome_4h':    round(sum(outcomes_4h)  / len(outcomes_4h),  2),
-                'avg_outcome_24h':   round(sum(outcomes_24h) / len(outcomes_24h), 2),
-                'win_rate_1h':       round(win_rate_1h,  1),
-                'win_rate_4h':       round(win_rate_4h,  1),
-                'win_rate_24h':      round(win_rate_24h, 1),
-                'high_conf_count':   len(high_conf),
-                'high_conf_winrate': round(high_conf_winrate, 1),
-                'best_trade':        round(max(outcomes_1h),  2),
-                'worst_trade':       round(min(outcomes_1h),  2),
-            }
-
-        # Metryki dla BUY z wysoką pewnością (najważniejsze)
-        buy_high = [s for s in self.by_verdict.get('BUY', [])
-                    if s['confidence'] == 'WYSOKA']
-        if buy_high:
-            results['buy_high_confidence'] = {
-                'count':       len(buy_high),
-                'win_rate_1h': round(
-                    sum(1 for s in buy_high if s['win_1h'])
-                    / len(buy_high) * 100, 1),
-                'avg_1h': round(
-                    sum(s['outcome_1h'] for s in buy_high)
-                    / len(buy_high), 2),
-            }
-
-        return results
-
-
-# ==================== GŁÓWNA KLASA BACKTESTINGU ====================
-
-class Backtester:
-
-    def __init__(self, days=10):
-        self.days      = days
-        self.generator = HistoricalDataGenerator(days)
-        self.analyst   = ClaudeAnalyst()
-        self.metrics   = BacktestMetrics()
-        init_db()
-
-    def run(self):
-        """
-        Uruchamia backtest na N dniach historycznych.
-        """
-        print(f"\n{'='*55}")
-        print(f"  BACKTEST — {self.days} dni historycznych")
-        print(f"  Tryb: {'DEMO (symulowane dane)' if True else 'LIVE'}")
-        print(f"{'='*55}\n")
-
-        start_date = now_chicago().date() - timedelta(days=self.days)
-
-        total_scans   = 0
-        total_signals = 0
-
-        for day_offset in range(self.days):
-            date = start_date + timedelta(days=day_offset)
-
-            # Pomijaj weekendy
-            if date.weekday() >= 5:
-                continue
-
-            print(f"📅 {date.strftime('%Y-%m-%d')} "
-                  f"({date.strftime('%A')})")
-
-            # Symuluj kilka skanów w ciągu dnia (co 5 min przez 6.5h = ~78)
-            # W backteście robimy 3 skany na dzień dla szybkości
-            scans_per_day = 3
-
-            day_signals = 0
-
-            for scan_num in range(scans_per_day):
-                # Generuj dane dla tej sesji
-                universe, dark_pool, finnhub_cache = \
-                    self.generator.generate_session(date)
-
-                # Pre-filter → TOP 5
-                top5 = get_top_tickers(
-                    universe,
-                    dark_pool_flow=dark_pool,
-                    finnhub_cache=finnhub_cache,
-                    top_n=CONFIG['max_tickers_for_claude'],
-                )
-
-                if not top5:
-                    continue
-
-                # Analiza przez Claude (mock w DEMO)
-                results = self.analyst.analyze_batch(
-                    top5,
-                    polygon_api=self.generator.polygon,
-                    uw_api=self.generator.uw,
-                )
-
-                # Zbierz metryki
-                for result, ticker_data in zip(results, top5):
-                    verdict    = result.get('verdict', 'WATCH')
-                    confidence = result.get('confidence', 'NISKA')
-                    price      = ticker_data.get('price', 0)
-
-                    # Symuluj wynik cenowy
-                    outcomes = self.generator.simulate_price_outcome(
-                        price, verdict
-                    )
-
-                    self.metrics.add_signal(
-                        ticker=ticker_data.get('ticker'),
-                        verdict=verdict,
-                        confidence=confidence,
-                        entry_price=price,
-                        outcomes=outcomes,
-                    )
-
-                    day_signals  += 1
-                    total_signals += 1
-
-                total_scans += 1
-
-            print(f"  Skanów: {scans_per_day} | "
-                  f"Sygnałów: {day_signals}")
-
-        print(f"\nŁącznie: {total_scans} skanów | "
-              f"{total_signals} sygnałów\n")
-
-        return self.metrics.compute()
-
-    def print_report(self, results):
-        """Drukuje raport backtestingu"""
-        if not results:
-            print("Brak wyników do raportu")
-            return
-
-        print(f"\n{'='*55}")
-        print(f"  RAPORT BACKTESTINGU")
-        print(f"{'='*55}")
-        print(f"  Łącznie sygnałów: {results['total_signals']}")
-
-        for verdict, stats in results.get('by_verdict', {}).items():
-            icon = ('🟢' if verdict == 'BUY'
-                    else '🟡' if verdict == 'WATCH'
-                    else '🔴')
-
-            print(f"\n{icon} {verdict} ({stats['count']} sygnałów):")
-            print(f"  Win rate:    1h: {stats['win_rate_1h']}% | "
-                  f"4h: {stats['win_rate_4h']}% | "
-                  f"24h: {stats['win_rate_24h']}%")
-            print(f"  Avg wynik:   1h: {stats['avg_outcome_1h']:+.2f}% | "
-                  f"4h: {stats['avg_outcome_4h']:+.2f}% | "
-                  f"24h: {stats['avg_outcome_24h']:+.2f}%")
-            print(f"  Best/Worst:  {stats['best_trade']:+.2f}% / "
-                  f"{stats['worst_trade']:+.2f}%")
-
-            if stats['high_conf_count'] > 0:
-                print(f"  Wysoka pewność: {stats['high_conf_count']} sygnałów | "
-                      f"win rate 1h: {stats['high_conf_winrate']}%")
-
-        # Najważniejsza metryka
-        bhc = results.get('buy_high_confidence')
-        if bhc:
-            print(f"\n{'='*55}")
-            print(f"  ⭐ BUY + WYSOKA PEWNOŚĆ (kluczowa metryka)")
-            print(f"{'='*55}")
-            print(f"  Sygnałów:  {bhc['count']}")
-            print(f"  Win rate:  {bhc['win_rate_1h']}% (1h)")
-            print(f"  Avg wynik: {bhc['avg_1h']:+.2f}% (1h)")
-
-            # Ocena systemu
-            print(f"\n  Ocena systemu:")
-            wr = bhc['win_rate_1h']
-            if wr >= 60:
-                print(f"  ✅ DOBRY — win rate {wr}% > 60% (próg opłacalności)")
-            elif wr >= 50:
-                print(f"  ⚠️  PRZECIĘTNY — win rate {wr}% (potrzebna optymalizacja)")
-            else:
-                print(f"  ❌ SŁABY — win rate {wr}% < 50% (system wymaga pracy)")
-
-            print(f"\n  UWAGA: To wyniki na danych DEMO (losowych).")
-            print(f"  Prawdziwy backtest wymaga kluczy Polygon API.")
-
-        print(f"\n{'='*55}")
-
-    def save_report(self, results):
-        """Zapisuje raport do pliku JSON"""
-        filename = f"backtest_{now_chicago().strftime('%Y%m%d_%H%M')}.json"
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"\n💾 Raport zapisany: {filename}")
-        return filename
-
-
-# ==================== ANALIZA BAZY DANYCH ====================
-
-def analyze_db_signals():
-    """
-    Analizuje sygnały zapisane w bazie danych.
-    Pokazuje trafność na podstawie rzeczywistych wyników.
-    """
-    from database import get_connection
-
-    conn = get_connection()
+import time
+from datetime import datetime, timedelta, date
+import pytz
+import requests
+import os
+from dotenv import load_dotenv
+import pathlib
+
+_ENV_PATH = pathlib.Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
+
+POLYGON_KEY = os.getenv('POLYGON_API_KEY', '')
+BASE_URL    = 'https://api.polygon.io'
+CHICAGO_TZ  = pytz.timezone('America/Chicago')
+
+END_DATE   = date.today()
+START_DATE = END_DATE - timedelta(days=180)
+
+EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
+EXCLUDED_TICKERS  = {'SOXS', 'SOXL', 'TQQQ', 'SQQQ', 'UVXY', 'SPXU', 'SPXL',
+                     'FNGU', 'FNGD', 'LABU', 'LABD', 'TZA', 'TNA'}
+
+session = requests.Session()
+session.headers.update({'User-Agent': 'StockScanner-Backtest/2.0'})
+api_calls = 0
+
+
+def api_get(endpoint, params=None):
+    global api_calls
+    params = params or {}
+    params['apiKey'] = POLYGON_KEY
     try:
-        c = conn.cursor()
-
-        # Ogólne statystyki
-        c.execute('''
-            SELECT verdict, COUNT(*) as cnt,
-                   AVG(outcome_1h) as avg_1h,
-                   AVG(outcome_4h) as avg_4h,
-                   AVG(outcome_24h) as avg_24h
-            FROM signals
-            WHERE outcome_1h IS NOT NULL
-            GROUP BY verdict
-        ''')
-        rows = c.fetchall()
-
-        if not rows:
-            print("\nBrak sygnałów z wynikami w bazie.")
-            print("Wyniki pojawią się po 1h, 4h, 24h od sygnałów.")
-            return
-
-        print(f"\n{'='*55}")
-        print(f"  ANALIZA BAZY DANYCH")
-        print(f"{'='*55}")
-
-        for row in rows:
-            verdict, cnt, avg_1h, avg_4h, avg_24h = row
-            icon = ('🟢' if verdict == 'BUY'
-                    else '🟡' if verdict == 'WATCH'
-                    else '🔴')
-            print(f"\n{icon} {verdict} ({cnt} sygnałów z wynikami):")
-            if avg_1h:
-                print(f"  Avg 1h:  {avg_1h:+.2f}%")
-            if avg_4h:
-                print(f"  Avg 4h:  {avg_4h:+.2f}%")
-            if avg_24h:
-                print(f"  Avg 24h: {avg_24h:+.2f}%")
-
-        # Najlepsze i najgorsze sygnały
-        c.execute('''
-            SELECT ticker, verdict, price, outcome_1h, timestamp
-            FROM signals
-            WHERE verdict = 'BUY' AND outcome_1h IS NOT NULL
-            ORDER BY outcome_1h DESC
-            LIMIT 5
-        ''')
-        best = c.fetchall()
-
-        if best:
-            print(f"\n🏆 TOP 5 BUY sygnałów (wynik 1h):")
-            for row in best:
-                ticker, verdict, price, outcome, ts = row
-                print(f"  {ticker:6s} @ ${price:.2f} → "
-                      f"{outcome:+.2f}% ({ts[:10]})")
-
-    finally:
-        conn.close()
+        r = session.get(f'{BASE_URL}{endpoint}', params=params, timeout=15)
+        api_calls += 1
+        if r.status_code == 429:
+            time.sleep(5)
+            return api_get(endpoint, params)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
 
 
-# ==================== URUCHOMIENIE ====================
+def is_excluded(ticker):
+    t = ticker.upper()
+    if t in EXCLUDED_TICKERS:
+        return True
+    for suffix in EXCLUDED_SUFFIXES:
+        if t.endswith(suffix) and len(t) > len(suffix):
+            return True
+    if '.' in t or '-' in t:
+        return True
+    return False
 
-if __name__ == "__main__":
-    print("\n" + "="*55)
-    print("  STOCK SCANNER — BACKTEST")
-    print("="*55)
-    print("\nCo chcesz zrobić?")
-    print("  1 — Backtest na symulowanych danych (10 dni)")
-    print("  2 — Analiza sygnałów z bazy danych")
-    print("  3 — Oba")
 
-    choice = input("\nWybór (1/2/3): ").strip()
+def get_trading_days(start, end):
+    days = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return days
 
-    if choice in ('1', '3'):
-        backtester = Backtester(days=10)
-        results    = backtester.run()
-        backtester.print_report(results)
-        backtester.save_report(results)
 
-    if choice in ('2', '3'):
-        analyze_db_signals()
+def get_grouped_bars(day_str):
+    data = api_get('/v2/aggs/grouped/locale/us/market/stocks/' + day_str,
+                   params={'adjusted': 'false'})
+    if not data:
+        return []
+    return data.get('results', [])
 
-    print("\n" + "="*55)
-    print("  Plik 8 gotowy ✅")
-    print("="*55)
+
+def get_minute_bars(ticker, day_str, end_str):
+    data = api_get(
+        f'/v2/aggs/ticker/{ticker}/range/5/minute/{day_str}/{end_str}',
+        params={'adjusted': 'false', 'sort': 'asc', 'limit': 5000}
+    )
+    if not data:
+        return []
+    return data.get('results', [])
+
+
+def price_at_offset(bars, open_ts_ms, hours):
+    target_ms = open_ts_ms + int(hours * 3600 * 1000)
+    for bar in bars:
+        if bar['t'] >= target_ms:
+            return bar['c']
+    if bars:
+        return bars[-1]['c']
+    return None
+
+
+def max_adverse_move(bars, open_ts_ms, entry_price, hours, direction='short'):
+    """MAE: max niekorzystny ruch. direction='short' = max wzrost, 'long' = max spadek."""
+    target_ms = open_ts_ms + int(hours * 3600 * 1000)
+    worst = entry_price
+    for bar in bars:
+        if bar['t'] > target_ms:
+            break
+        if bar['t'] >= open_ts_ms:
+            if direction == 'short' and bar.get('h', 0) > worst:
+                worst = bar['h']
+            elif direction == 'long' and bar.get('l', 0) < worst:
+                worst = bar['l']
+    if entry_price > 0:
+        pct = (worst - entry_price) / entry_price * 100
+        return round(abs(pct), 2)
+    return 0
+
+
+def vwap_from_bars(bars, open_ts_ms, minutes=30):
+    """Oblicz VWAP z pierwszych N minut."""
+    target_ms = open_ts_ms + minutes * 60 * 1000
+    total_vp = 0
+    total_v  = 0
+    for bar in bars:
+        if bar['t'] > target_ms:
+            break
+        if bar['t'] >= open_ts_ms:
+            v  = bar.get('v', 0)
+            vw = bar.get('vw', bar.get('c', 0))
+            total_vp += vw * v
+            total_v  += v
+    if total_v > 0:
+        return total_vp / total_v
+    return None
+
+
+def first_bar_above(bars, open_ts_ms, threshold, minutes=30):
+    """Czy cena przebila threshold w pierwszych N minutach?"""
+    target_ms = open_ts_ms + minutes * 60 * 1000
+    for bar in bars:
+        if bar['t'] > target_ms:
+            break
+        if bar['t'] >= open_ts_ms and bar.get('h', 0) >= threshold:
+            return bar['c']  # cena zamkniecia bara gdzie przebito
+    return None
+
+
+# ==================== STRATEGIE ====================
+
+def check_short_gap_fade(bar, prev_close):
+    """S1: SHORT gap >= 50%, vol >= 500k."""
+    gap = (bar['o'] - prev_close) / prev_close * 100 if prev_close else 0
+    if gap >= 50 and bar['v'] >= 500_000 and 0.10 <= bar['o'] <= 20:
+        return {'strategy': 'SHORT_GAP_FADE', 'gap': round(gap, 1),
+                'entry': bar['o'], 'direction': 'short',
+                'sl_pct': -20, 'tp_pct': 25}
+    return None
+
+
+def check_long_gap_small(bar, prev_close):
+    """S2: LONG gap 10-50%, vol >= 2M."""
+    gap = (bar['o'] - prev_close) / prev_close * 100 if prev_close else 0
+    if 10 <= gap < 50 and bar['v'] >= 2_000_000 and 0.50 <= bar['o'] <= 15:
+        return {'strategy': 'LONG_GAP_SMALL', 'gap': round(gap, 1),
+                'entry': bar['o'], 'direction': 'long',
+                'sl_pct': -5, 'tp_pct': 8}
+    return None
+
+
+def check_long_nano_runner(bar, prev_close):
+    """S3: LONG nano-cap < $1, vol >= 5M, zmiana >= 15%."""
+    chg = (bar['c'] - bar['o']) / bar['o'] * 100 if bar['o'] else 0
+    if bar['o'] < 1.0 and bar['v'] >= 5_000_000 and chg >= 15 and bar['o'] >= 0.10:
+        return {'strategy': 'LONG_NANO_RUNNER', 'gap': round(chg, 1),
+                'entry': bar['o'], 'direction': 'long',
+                'sl_pct': -8, 'tp_pct': 20}
+    return None
+
+
+def check_long_micro_break(bar, prev_close):
+    """S4: LONG micro-cap $1-5, vol >= 5M, zmiana >= 20%."""
+    chg = (bar['c'] - bar['o']) / bar['o'] * 100 if bar['o'] else 0
+    if 1.0 <= bar['o'] <= 5.0 and bar['v'] >= 5_000_000 and chg >= 20:
+        return {'strategy': 'LONG_MICRO_BREAK', 'gap': round(chg, 1),
+                'entry': bar['o'], 'direction': 'long',
+                'sl_pct': -6, 'tp_pct': 15}
+    return None
+
+
+def check_long_extreme_vol(bar, prev_close, avg_vol):
+    """S5: LONG extreme volume (> 20x avg), vol >= 2M, chg > 0."""
+    if avg_vol and avg_vol > 0:
+        ratio = bar['v'] / avg_vol
+    else:
+        ratio = 0
+    chg = (bar['c'] - bar['o']) / bar['o'] * 100 if bar['o'] else 0
+    if ratio >= 20 and bar['v'] >= 2_000_000 and chg > 0 and 0.10 <= bar['o'] <= 15:
+        return {'strategy': 'LONG_EXTREME_VOL', 'gap': round(chg, 1),
+                'entry': bar['o'], 'direction': 'long', 'vol_ratio': round(ratio, 0),
+                'sl_pct': -6, 'tp_pct': 10}
+    return None
+
+
+ALL_STRATEGIES = [
+    check_short_gap_fade,
+    check_long_gap_small,
+    check_long_nano_runner,
+    check_long_micro_break,
+]
+
+
+def main():
+    global api_calls
+
+    print("=" * 70)
+    print(f"BACKTEST MULTI-STRATEGY | {START_DATE} -> {END_DATE} (6 miesiecy)")
+    print("=" * 70)
+
+    trading_days = get_trading_days(START_DATE, END_DATE)
+    print(f"Dni handlowe: {len(trading_days)}")
+
+    # Cache prev_close per ticker per dzien
+    prev_closes = {}  # {day_str: {ticker: close}}
+    all_signals = []
+
+    for i, day in enumerate(trading_days):
+        day_str  = day.strftime('%Y-%m-%d')
+        next_str = (day + timedelta(days=2)).strftime('%Y-%m-%d')
+        prev_str = (day - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Pobierz grouped daily bars na TEN dzien
+        bars_today = get_grouped_bars(day_str)
+        if not bars_today:
+            continue
+
+        # Pobierz grouped daily bars na WCZORAJ (prev close)
+        if prev_str not in prev_closes:
+            bars_prev = get_grouped_bars(prev_str)
+            if bars_prev:
+                prev_closes[prev_str] = {b['T']: b['c'] for b in bars_prev if b.get('T') and b.get('c')}
+            else:
+                prev_closes[prev_str] = {}
+
+        prev_close_map = prev_closes.get(prev_str, {})
+
+        # Sprawdz kazdy ticker w dniu
+        candidates = []
+        for bar in bars_today:
+            ticker = bar.get('T', '')
+            if is_excluded(ticker):
+                continue
+
+            prev_c = prev_close_map.get(ticker)
+            if not prev_c or prev_c <= 0:
+                continue
+
+            # Testuj kazda strategie
+            for strategy_fn in ALL_STRATEGIES:
+                signal = strategy_fn(bar, prev_c)
+                if signal:
+                    signal['ticker'] = ticker
+                    signal['day']    = day_str
+                    signal['volume'] = bar['v']
+                    signal['close']  = bar['c']
+                    signal['high']   = bar.get('h', 0)
+                    signal['low']    = bar.get('l', 0)
+                    signal['prev_close'] = prev_c
+                    candidates.append(signal)
+
+        # Dla kazdego kandydata — pobierz minute bars i oblicz outcome
+        # Ogranicz do 15 per dzien zeby nie przekroczyc API
+        candidates.sort(key=lambda x: x.get('volume', 0), reverse=True)
+        candidates = candidates[:15]
+
+        seen_tickers_day = set()
+        for sig in candidates:
+            ticker = sig['ticker']
+            if ticker in seen_tickers_day:
+                continue
+            seen_tickers_day.add(ticker)
+
+            mbars = get_minute_bars(ticker, day_str, next_str)
+            if not mbars:
+                continue
+
+            entry   = sig['entry']
+            open_ms = mbars[0]['t'] if mbars else 0
+            direction = sig['direction']
+
+            # Outcome
+            p1h  = price_at_offset(mbars, open_ms, 1)
+            p4h  = price_at_offset(mbars, open_ms, 4)
+            p24h = price_at_offset(mbars, open_ms, 24)
+
+            if direction == 'short':
+                sig['pnl_1h']  = round(-((p1h - entry) / entry * 100), 2) if p1h and entry else None
+                sig['pnl_4h']  = round(-((p4h - entry) / entry * 100), 2) if p4h and entry else None
+                sig['pnl_24h'] = round(-((p24h - entry) / entry * 100), 2) if p24h and entry else None
+            else:
+                sig['pnl_1h']  = round(((p1h - entry) / entry * 100), 2) if p1h and entry else None
+                sig['pnl_4h']  = round(((p4h - entry) / entry * 100), 2) if p4h and entry else None
+                sig['pnl_24h'] = round(((p24h - entry) / entry * 100), 2) if p24h and entry else None
+
+            sig['mae_4h'] = max_adverse_move(mbars, open_ms, entry, 4, direction)
+
+            # SL/TP simulation
+            sl = sig['sl_pct']
+            tp = sig['tp_pct']
+            if direction == 'short':
+                sig['stopped'] = sig['mae_4h'] >= abs(sl)
+            else:
+                sig['stopped'] = sig['mae_4h'] >= abs(sl)
+
+            all_signals.append(sig)
+
+        if (i + 1) % 10 == 0:
+            print(f"  [{i+1}/{len(trading_days)}] {day_str} | "
+                  f"sygnaly: {len(all_signals)} | API: {api_calls}")
+
+    # Zapisz prev_closes na disk (zeby nie tracic danych)
+    prev_closes.clear()
+
+    # ==================== WYNIKI ====================
+    print("\n" + "=" * 70)
+    print(f"WYNIKI BACKESTU | {len(all_signals)} sygnalow | {api_calls} API calls")
+    print("=" * 70)
+
+    strategies = {}
+    for s in all_signals:
+        strat = s['strategy']
+        strategies.setdefault(strat, []).append(s)
+
+    for strat, sigs in sorted(strategies.items()):
+        print(f"\n{'—' * 60}")
+        print(f"  {strat} (n={len(sigs)})")
+        print(f"{'—' * 60}")
+
+        with_4h = [s for s in sigs if s.get('pnl_4h') is not None]
+        if not with_4h:
+            print("  Brak danych 4h")
+            continue
+
+        # Bez SL/TP
+        vals_1h  = [s['pnl_1h'] for s in sigs if s.get('pnl_1h') is not None]
+        vals_4h  = [s['pnl_4h'] for s in with_4h]
+        vals_24h = [s['pnl_24h'] for s in sigs if s.get('pnl_24h') is not None]
+
+        def p(vals, label):
+            if not vals:
+                return
+            wins = sum(1 for v in vals if v > 0)
+            avg  = sum(vals) / len(vals)
+            best = max(vals)
+            worst = min(vals)
+            print(f"  {label}: n={len(vals):4d} WR {wins/len(vals)*100:5.1f}% "
+                  f"avg {avg:+6.2f}% best {best:+.0f}% worst {worst:+.0f}%")
+
+        p(vals_1h, '1h ')
+        p(vals_4h, '4h ')
+        p(vals_24h, '24h')
+
+        # Z SL/TP
+        sl = sigs[0]['sl_pct']
+        tp = sigs[0]['tp_pct']
+        total_pnl = 0
+        wins_sim  = 0
+        trades    = 0
+        for s in with_4h:
+            if s.get('stopped'):
+                total_pnl += sl
+            else:
+                pnl = min(s['pnl_4h'], tp) if s['pnl_4h'] > 0 else s['pnl_4h']
+                total_pnl += pnl
+                if pnl > 0:
+                    wins_sim += 1
+            trades += 1
+
+        stopped = sum(1 for s in with_4h if s.get('stopped'))
+        if trades:
+            print(f"\n  SL/TP sim ({sl}%/{tp}%):")
+            print(f"    Trades: {trades} | Wins: {wins_sim} ({wins_sim/trades*100:.0f}%) | "
+                  f"Stopped: {stopped} ({stopped/trades*100:.0f}%)")
+            print(f"    Total PnL: {total_pnl:+.1f}% | Avg/trade: {total_pnl/trades:+.2f}%")
+
+        # Frequency
+        from collections import Counter
+        daily = Counter(s['day'] for s in sigs)
+        print(f"\n  Srednio dziennie: {len(sigs)/len(daily):.1f} sygnalow "
+              f"(min {min(daily.values())} max {max(daily.values())})")
+
+        # TOP 5
+        top5 = sorted(with_4h, key=lambda x: x.get('pnl_4h', -999), reverse=True)[:5]
+        print(f"\n  TOP 5:")
+        for s in top5:
+            print(f"    {s['ticker']:6s} {s['day']} gap{s.get('gap',0):+.0f}% "
+                  f"${s['entry']:.2f} -> 4h: {s['pnl_4h']:+.1f}%")
+
+        # WORST 5
+        worst5 = sorted(with_4h, key=lambda x: x.get('pnl_4h', 999))[:5]
+        print(f"  WORST 5:")
+        for s in worst5:
+            print(f"    {s['ticker']:6s} {s['day']} gap{s.get('gap',0):+.0f}% "
+                  f"${s['entry']:.2f} -> 4h: {s['pnl_4h']:+.1f}%")
+
+    # Zapisz wyniki
+    fname = f"backtest_multi_{START_DATE}_{END_DATE}.json"
+    with open(fname, 'w') as f:
+        json.dump({
+            'start': str(START_DATE), 'end': str(END_DATE),
+            'strategies': {
+                strat: {
+                    'n': len(sigs),
+                    'signals': sigs
+                }
+                for strat, sigs in strategies.items()
+            }
+        }, f, indent=2)
+    print(f"\nZapisano: {fname}")
+    print(f"API calls: {api_calls}")
+
+
+if __name__ == '__main__':
+    main()

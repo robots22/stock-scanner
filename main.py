@@ -389,14 +389,10 @@ class StockScanner:
                     verdict           = 'WATCH'
                     logger.debug(f"{ticker}: BUY poza sesja -> WATCH")
 
-                elif self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 15):
-                    if not is_wysoka:
-                        result['verdict'] = 'WATCH'
-                        verdict           = 'WATCH'
-                        logger.info(f"Dzienny limit BUY (15) -> {ticker} WATCH")
-                    else:
-                        logger.info(f"Dzienny limit BUY (15) ale WYSOKA -> {ticker} BUY override")
-                        self._buy_count_today += 1
+                elif self._buy_count_today >= CONFIG.get('max_buy_signals_per_day', 5):
+                    result['verdict'] = 'WATCH'
+                    verdict           = 'WATCH'
+                    logger.info(f"Dzienny limit BUY -> {ticker} WATCH")
 
                 else:
                     open_start = n.replace(hour=8,  minute=30, second=0, microsecond=0)
@@ -405,30 +401,30 @@ class StockScanner:
                     power_end  = n.replace(hour=15, minute=0,  second=0, microsecond=0)
 
                     if open_start <= n < open_end:
-                        if self._buy_count_open >= CONFIG.get('max_buy_open', 7) and not is_wysoka:
+                        if self._buy_count_open >= CONFIG.get('max_buy_open', 3):
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
-                            logger.info(f"Open limit (7) -> {ticker} WATCH")
+                            logger.info(f"Open limit -> {ticker} WATCH")
                         else:
                             self._buy_count_open  += 1
                             self._buy_count_today += 1
                             self._buy_tickers_today.add(ticker)
 
                     elif open_end <= n < midday_end:
-                        if self._buy_count_midday >= CONFIG.get('max_buy_midday', 5) and not is_wysoka:
+                        if self._buy_count_midday >= CONFIG.get('max_buy_midday', 1):
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
-                            logger.info(f"Midday limit (5) -> {ticker} WATCH")
+                            logger.info(f"Midday limit -> {ticker} WATCH")
                         else:
                             self._buy_count_midday += 1
                             self._buy_count_today  += 1
                             self._buy_tickers_today.add(ticker)
 
                     elif midday_end <= n < power_end:
-                        if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 3) and not is_wysoka:
+                        if self._buy_count_power_hour >= CONFIG.get('max_buy_power_hour', 1):
                             result['verdict'] = 'WATCH'
                             verdict           = 'WATCH'
-                            logger.info(f"Power hour limit (3) -> {ticker} WATCH")
+                            logger.info(f"Power hour limit -> {ticker} WATCH")
                         else:
                             self._buy_count_power_hour += 1
                             self._buy_count_today      += 1
@@ -437,24 +433,12 @@ class StockScanner:
                         self._buy_count_today += 1
                         self._buy_tickers_today.add(ticker)
 
-            # WATCH escalation — 3x WATCH z rzędu = eskaluj do BUY
-            # ALE tylko gdy score >= 40 (ticker musi miec realny katalizator)
+            # WATCH escalation USUNIETA (21.07.2026)
+            # Powod: limit zamienial BUY->WATCH, a eskalacja WATCH->BUY z powrotem.
+            # Bledne kolo dawalo 20 BUY zamiast 5. Licznik zostaje do statystyk.
             if verdict == 'WATCH':
                 self._watch_count[ticker] = self._watch_count.get(ticker, 0) + 1
-                if (self._watch_count[ticker] >= 3 and
-                        ticker_data.get('score', 0) >= 40):
-                    logger.info(f"WATCH escalation: {ticker} ({self._watch_count[ticker]}x WATCH) — eskalacja do BUY")
-                    result['verdict']        = 'BUY'
-                    result['confidence']     = 'SREDNIA'
-                    result['justification']  = (
-                        result.get('justification', '') +
-                        f" [Auto-escalacja: {self._watch_count[ticker]}x WATCH z rzędu]"
-                    )
-                    verdict = 'BUY'
-                    self._watch_count[ticker] = 0  # reset po eskalacji
-            elif verdict == 'BUY':
-                self._watch_count.pop(ticker, None)
-            elif verdict == 'AVOID':
+            else:
                 self._watch_count.pop(ticker, None)
 
             signal_id = save_signal(result, ticker_data,

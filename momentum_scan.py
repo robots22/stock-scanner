@@ -30,6 +30,8 @@ MOMENTUM_CONFIG = {
     'trigger_c_change':    25.0,         # bylo 20.0
     'trigger_d_float':     5_000_000,
     'trigger_d_vol':       2_000_000,    # bylo 1M
+    'trigger_d_change':    20.0,         # NOWE: wymog realnej zmiany
+    'trigger_d_vol_ratio': 3.0,          # NOWE: wymog rvol
     'trigger_e_rvol':      100.0,
     'min_price':           0.10,
     'max_price':           20.0,
@@ -40,6 +42,7 @@ MOMENTUM_CONFIG = {
 }
 
 EXCLUDED_SUFFIXES = ('W', 'WS', 'WW', 'R', 'RT', 'U')
+EXCLUDED_TICKERS = ['AMZD', 'AMZU', 'BITI', 'BITX', 'BTCZ', 'DPST', 'DRN', 'DRV', 'FNGD', 'FNGU', 'HIHO', 'LABD', 'LABU', 'MSFD', 'MSFU', 'MUZ', 'NVD', 'NVDL', 'PLTD', 'SOXL', 'SOXS', 'SPXL', 'SPXU', 'SQQQ', 'TNA', 'TQQQ', 'TSDD', 'TSLL', 'TZA', 'UVXY', 'WEBL', 'WEBS', 'YANG', 'YINN']
 
 
 class MomentumScanner:
@@ -61,6 +64,8 @@ class MomentumScanner:
             self._alert_date   = today
 
     def _is_excluded(self, ticker):
+        if ticker.upper() in EXCLUDED_TICKERS:
+            return True
         t = ticker.upper()
         for suffix in EXCLUDED_SUFFIXES:
             if t.endswith(suffix) and len(t) > len(suffix):
@@ -110,9 +115,11 @@ class MomentumScanner:
                 (' gap' + '{:+.0f}'.format(gap) + '%' if gap else ' +' + '{:.0f}'.format(change) + '%'))
 
         if (float_sh > 0 and float_sh <= cfg['trigger_d_float'] and
-                volume >= cfg['trigger_d_vol']):
+                volume >= cfg['trigger_d_vol'] and
+                change >= cfg['trigger_d_change'] and
+                ratio >= cfg['trigger_d_vol_ratio']):
             float_m = float_sh / 1_000_000
-            return 'LOW_FLOAT', 'Float ' + '{:.1f}'.format(float_m) + 'M vol ' + '{:.1f}'.format(volume/1_000_000) + 'M'
+            return 'LOW_FLOAT', ('Float ' + '{:.1f}'.format(float_m) + 'M vol ' + '{:.1f}'.format(volume/1_000_000) + 'M chg' + '{:+.0f}'.format(change) + '%')
 
         if ratio >= cfg['trigger_e_rvol']:
             return 'ULTRA_RVOL', 'Vol ' + '{:.0f}'.format(ratio) + 'x'

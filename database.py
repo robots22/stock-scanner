@@ -67,11 +67,10 @@ def _should_skip_signal(conn, ticker, verdict):
 
     if verdict in ('WATCH', 'AVOID'):
         # Bierzemy POPRZEDNI ostatni sygnal (dowolny verdict)
+        # Tylko PIERWSZY zapis per ticker/dzien (dowolny verdict).
+        # Claude oscyluje WATCH->BUY->AVOID->WATCH; kazdy flip generowal wiersz.
         prev_v, _ = _last_signal_today(conn, ticker)
-        if prev_v is None:
-            return False  # pierwszy dzis — zapisz
-        # Pomijamy gdy poprzedni ma taki sam verdict
-        return prev_v == verdict
+        return prev_v is not None
 
     return False
 

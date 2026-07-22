@@ -237,3 +237,6 @@ backtest_*.json
 *.code-workspace
 
 *.code-workspace
+database.py.bak_20260721_230646
+main.py.bak_20260721_230646
+scanner.db.pre_dedup_20260716_200551.bak
