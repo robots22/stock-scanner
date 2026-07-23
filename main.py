@@ -37,7 +37,7 @@ Historia zmian:
            - pomija cykl główny i UW scan do 8:45 CST
            - pre-market: 4:00-8:30 CST, co 15 min, vol > 10k
            - after-market: 15:00-20:00 CST, co 15 min, vol > 10k
-           - Claude tylko dla tickerów z katalizatorem w extended hours
+           - Kimi tylko dla tickerów z katalizatorem w extended hours
            - manual_queue: kolejka manualnych analiz z Telegram /analyze
 """
 
@@ -47,10 +47,11 @@ import sys
 import threading
 from datetime import datetime, timedelta
 
-from config import (logger, CONFIG, CLAUDE_CONFIG, DEMO_MODE, now_chicago,
+from config import (logger, CONFIG, KIMI_CONFIG,KIMI_API_KEY, DEMO_MODE, now_chicago,
                     is_market_open, is_premarket, is_aftermarket,
                     get_market_status, get_min_volume, get_dynamic_threshold,
-                    CHICAGO_TZ)
+                    CHICAGO_TZ, POLYGON_API_KEY, UNUSUAL_WHALES_KEY, FINNHUB_API_KEY,
+                    ALPACA_API_KEY, ALPACA_SECRET_KEY)
 from datetime import datetime
 from mock_polygon import MockPolygon, MockUnusualWhales, MockFinnhub
 from uw_api import UnusualWhalesAPI
@@ -58,6 +59,7 @@ from polygon_api import PolygonAPI
 from finnhub_api import FinnhubAPI
 from alpaca_api import AlpacaAPI, get_ticker_with_fallback
 from pre_filter import get_top_tickers, uw_fast_track
+from kimi_analyst import KimiAnalyst
 from claude_analyst import ClaudeAnalyst
 from database import (init_db, save_signal, get_signal_history,
                       get_active_buy_signals, check_retrigger_conditions,
@@ -92,6 +94,7 @@ class StockScanner:
             self.polygon = MockPolygon()
             self.uw      = MockUnusualWhales()
             self.fh      = MockFinnhub()
+            self.alpaca  = None  # ← brak Alpaca w DEMO
             logger.info("Tryb DEMO — używam Mock API")
         else:
             # Etap 2 — wszystkie prawdziwe API
@@ -101,13 +104,38 @@ class StockScanner:
             self.alpaca  = AlpacaAPI()         # ← backup danych
             logger.info("Tryb LIVE — Polygon + UW + Finnhub + Alpaca backup")
 
-        # Alpaca (tylko w trybie LIVE)
+        # WALIDACJA API KEYS w trybie LIVE
         if not self.demo_mode:
-            pass  # już zainicjowany wyżej
-        else:
-            self.alpaca = None
+            missing = []
+            if not POLYGON_API_KEY:
+                missing.append('POLYGON_API_KEY')
+            if not UNUSUAL_WHALES_KEY:
+                missing.append('UNUSUAL_WHALES_KEY')
+            if not FINNHUB_API_KEY:
+                missing.append('FINNHUB_API_KEY')
+            if not ALPACA_API_KEY:
+                missing.append('ALPACA_API_KEY')
+            if not ALPACA_SECRET_KEY:
+                missing.append('ALPACA_SECRET_KEY')
+            if missing:
+                raise ValueError(
+                    f"BRAK KLUCZY API w .env: {', '.join(missing)}. "
+                    f"Uzupelnij plik .env przed uruchomieniem w trybie LIVE."
+                )
 
-        # Claude analityk
+            # WALIDACJA: Alpaca Paper vs Live
+            from config import ALPACA_BASE_URL
+            if 'paper' not in ALPACA_BASE_URL.lower():
+                logger.warning("=" * 60)
+                logger.warning("UWAGA: Alpaca w trybie LIVE TRADING!")
+                logger.warning("    Base URL: " + ALPACA_BASE_URL)
+                logger.warning("    Jesli chcesz paper trading, sprawdz config.py")
+                logger.warning("=" * 60)
+
+        # Analityk AI — Claude Haiku (Kimi wycofany 22.07.2026)
+        # Powod: Kimi-k3/k2.6 to reasoning-style, wypelnia reasoning_content
+        # ale zostawia content pusty — nasz parser dostawal WATCH dla wszystkiego.
+        # Claude Haiku 4.5: WR ~42% (dane n=321), koszt ~$0.30/dzien.
         self.analyst = ClaudeAnalyst()
 
         # Stan systemu
@@ -133,6 +161,9 @@ class StockScanner:
         self._watch_count = {}
         self._watch_saved_today = {}
         self._watch_saved_date  = None
+
+        # Reset flagi watchlist przy kazdym starcie
+        self._watchlist_sent_today = False
 
         # Dzienny licznik BUY sygnalow - Opcja C Power Windows
         self._buy_count_today      = 0
@@ -183,7 +214,7 @@ class StockScanner:
     def run_main_scan(self):
         """
         Główny cykl skanowania — co 5 minut.
-        Polygon + Finnhub → pre-filter → TOP 5 → Claude AI
+        Polygon + Finnhub → pre-filter → TOP 5 → Kimi AI
         """
         logger.info(f"=== CYKL GŁÓWNY #{self.scan_count + 1} ===")
 
@@ -317,7 +348,7 @@ class StockScanner:
             signal_history_fn = get_signal_history,
         )
 
-        # Tryb 2: Momentum scan (bez Claude, bez kosztow)
+        # Tryb 2: Momentum scan (bez Kimi, bez kosztow)
         # Przekaz float_shares z cache do universe
         if is_market_open():
             try:
@@ -349,7 +380,7 @@ class StockScanner:
         with self._lock:
             self.current_top5 = top5
 
-        # 5. Analiza przez Claude AI
+        # 5. Analiza przez Kimi AI
         results = self.analyst.analyze_batch(
             top5,
             polygon_api=self.polygon,
@@ -536,17 +567,30 @@ class StockScanner:
 
     def _is_market_open_filter(self):
         """
-        Zwraca True jeśli jesteśmy w pierwszych N minutach po otwarciu rynku.
-        W tym czasie ceny small-cap są niereliable — pomijamy sygnały.
+        Zwraca True jesli jestesmy w pierwszych N minutach po otwarciu rynku.
+
+        Dlaczego domyslnie 0 (WYLACZONE):
+        - Polygon subscription zawiera live data (real-time)
+        - Ceny small-cap sa reliable od pierwszej sekundy sesji
+        - Nie ma potrzeby pomijac pierwszych 15 minut
+
+        Jesli chcesz wlaczyc filter, ustaw w config.py:
+            'market_open_filter_minutes': 15
         """
         if not is_market_open():
             return False
+
+        # Domyslnie 0 minut — Polygon live data = brak filtera
+        filter_minutes = CONFIG.get('market_open_filter_minutes', 0)
+
+        # Filter wylaczony (0 lub mniej)
+        if filter_minutes <= 0:
+            return False
+
         n = now_chicago()
         market_open = n.replace(hour=8, minute=30, second=0, microsecond=0)
         elapsed_minutes = (n - market_open).total_seconds() / 60
-        filter_minutes  = CONFIG.get('market_open_filter_minutes', 15)
         return elapsed_minutes < filter_minutes
-
     def run_uw_scan(self):
         """
         Cykl Unusual Whales — co 1 minutę.
@@ -575,7 +619,7 @@ class StockScanner:
             logger.info(f"UW Fast Track: {len(fast_track)} nowych tickerów")
             for ft in fast_track:
                 logger.info(f"  ⚡ {ft['ticker']}: {ft['reason']}")
-                # Fast track ticker trafia natychmiast do Claude
+                # Fast track ticker trafia natychmiast do Kimi
                 # Pobierz dane dla tickera
                 ticker_data = self.polygon.get_ticker_details(ft['ticker'])
                 if ticker_data:
@@ -633,7 +677,6 @@ class StockScanner:
                     row = c.fetchone()
                     conn.close()
                     if row:
-                        from datetime import datetime
                         buy_time = datetime.fromisoformat(row[0])
                         if buy_time.tzinfo is None:
                             buy_time = buy_time.replace(tzinfo=now_chicago().tzinfo)
@@ -682,7 +725,7 @@ class StockScanner:
 
                 current_price = uw_data.get('price', sig['price'])
 
-                # Take profit — alert bez re-analizy Claude'a
+                # Take profit — alert bez re-analizy Kimi
                 if trigger == 'TAKE_PROFIT':
                     gain = ((current_price - sig['price'])
                             / sig['price'] * 100)
@@ -693,7 +736,7 @@ class StockScanner:
                     close_signal(sig['id'], f"TAKE_PROFIT +{gain:.1f}%")
                     continue
 
-                # Trigger UW — re-analiza przez Claude
+                # Trigger UW — re-analiza przez Kimi
                 ticker_data = {
                     'ticker':       ticker,
                     'price':        current_price,
@@ -824,7 +867,7 @@ class StockScanner:
 
     def get_signal_history(self, ticker, limit=5):
         """
-        Wrapper dla claude_analyst.analyze_batch() —
+        Wrapper dla kimi_analyst.analyze_batch() —
         dostarcza historię sygnałów z bazy.
         """
         return get_signal_history(ticker, limit)
@@ -938,7 +981,7 @@ class StockScanner:
             news_cache = self.polygon.get_recent_news_tickers(hours=4, limit=100)
         except Exception as e:
             logger.warning(f"Pre-market news scan error: {e}")
-            for t in sorted(filtered, key=lambda x: x.get('volume', 0), reverse=True)[:50]:
+            for t in sorted(universe, key=lambda x: x.get('volume', 0), reverse=True)[:50]:
                 try:
                     news = self.polygon.get_news(t['ticker'], limit=3)
                     if news:
@@ -1003,7 +1046,7 @@ class StockScanner:
             logger.info(f"  {t['ticker']:6s} | score: {t['score']:3d} | "
                         f"${t['price']:.2f} | {' | '.join(t['reasons'][:2])}")
 
-        # Analiza Claude
+        # Analiza Kimi
         results = self.analyst.analyze_batch(
             top3,
             polygon_api=self.polygon,
@@ -1157,7 +1200,7 @@ class StockScanner:
     def run_extended_scan(self):
         """
         Skan pre-market lub after-market — co 15 minut.
-        Claude analizuje tylko tickery z katalizatorem (earnings, FDA, insider).
+        Kimi analizuje tylko tickery z katalizatorem (earnings, FDA, insider).
         Wolumen minimalny: 10,000 (zamiast 100,000 podczas sesji).
         """
         status = get_market_status()
@@ -1213,7 +1256,7 @@ class StockScanner:
         if not top5:
             return
 
-        # Analiza Claude
+        # Analiza Kimi (Claude) — batch
         results = self.analyst.analyze_batch(
             top5,
             polygon_api=self.polygon,
@@ -1251,7 +1294,7 @@ class StockScanner:
     def run_manual_analysis(self):
         """
         Przetwarza kolejkę manualnych analiz.
-        Wywołuje Claude dla każdego tickera z kolejki.
+        Wywołuje Kimi dla każdego tickera z kolejki.
         """
         with manual_queue_lock:
             queue = manual_queue.copy()
@@ -1261,7 +1304,7 @@ class StockScanner:
             return
 
         budget = CONFIG.get('manual_analysis_daily_usd',
-                             CLAUDE_CONFIG.get('daily_budget_usd', 2.27))
+                             KIMI_CONFIG.get('daily_budget_usd', 2.27))
         if self.manual_cost_usd >= budget:
             logger.warning(f"Manual analysis: dzienny limit ${budget:.2f} przekroczony")
             from telegram_alerts import send_message
@@ -1323,7 +1366,7 @@ class StockScanner:
   Rynek:   {get_market_status()}
   Czas:    {now_chicago().strftime('%Y-%m-%d %H:%M:%S')} CST
   Cykl:    co {CONFIG['main_scan_interval']//60} min (UW: co {CONFIG['uw_scan_interval']}s)
-  TOP:     {CONFIG['max_tickers_for_claude']} tickerów → Claude AI
+  TOP:     {CONFIG['max_tickers_for_claude']} tickerów → Kimi AI
 {'='*55}
 """)
 
@@ -1393,7 +1436,7 @@ class StockScanner:
                 )
 
                 if is_weekend:
-                    pass  # weekend — brak skanow, brak kosztow Claude
+                    pass  # weekend — brak skanow, brak kosztow Kimi
                 elif main_due:
                     try:
                         self.run_main_scan()

@@ -36,8 +36,10 @@ POLYGON_API_KEY      = os.getenv('POLYGON_API_KEY', '')
 UNUSUAL_WHALES_KEY   = os.getenv('UNUSUAL_WHALES_KEY', '')
 ALPACA_API_KEY       = os.getenv('ALPACA_API_KEY', '')
 ALPACA_SECRET_KEY    = os.getenv('ALPACA_SECRET_KEY', '')
+ALPACA_BASE_URL      = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
 FINNHUB_API_KEY      = os.getenv('FINNHUB_API_KEY', '')
 ANTHROPIC_API_KEY    = os.getenv('ANTHROPIC_API_KEY', '')
+KIMI_API_KEY         = os.getenv('KIMI_API_KEY', '')
 TELEGRAM_BOT_TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID     = os.getenv('TELEGRAM_CHAT_ID', '')
 TELEGRAM_CHAT_ID_2   = os.getenv('TELEGRAM_CHAT_ID_2', '')
@@ -137,7 +139,7 @@ CONFIG = {
     'log_file': 'scanner.log',
 
     # Ignoruj sygnały w pierwszych N minutach po otwarciu rynku
-    'market_open_filter_minutes': 5,
+    'market_open_filter_minutes': 0,
 
     # ==================== EXTENDED HOURS ====================
     # Pre-market: 4:00-8:30 CST (5:00-9:30 ET)
@@ -154,26 +156,27 @@ CONFIG = {
     'claude_extended_hours_catalyst':  True,   # True = analizuj z katalizatorem
 }
 
-# ==================== CLAUDE AI ====================
+# ==================== CLAUDE AI CONFIG ====================
+# Aktywny 22.07.2026 (Kimi wycofany — reasoning-style modele nie dawaly odpowiedzi)
 CLAUDE_CONFIG = {
     'model': 'claude-haiku-4-5-20251001',
     'max_tokens': 1000,
 
-    # Ile ostatnich sygnałów dla danego tickera wysyłamy jako kontekst
+    # Ile ostatnich sygnalow dla danego tickera wysylamy jako kontekst
     'signal_history_count': 5,
 
-    # Twardy limit kosztów Claude API
-    # System zatrzymuje wywołania Claude gdy limit dzienny zostanie przekroczony
-    'monthly_budget_usd':        50.00,
-    'daily_budget_usd':          50.00 / 22,  # ~$1.14/dzień (22 dni handlowe)
-    'cost_per_call_usd':         0.0028,       # Sonnet: ~500 in + 200 out tokenów
+    # Twardy limit kosztow Claude API
+    # System zatrzymuje wywolania Claude gdy limit dzienny zostanie przekroczony
+    'monthly_budget_usd':        15.00,
+    'daily_budget_usd':          15.00 / 22,   # ~$0.68/dzien (22 dni handlowe)
+    'cost_per_call_usd':         0.001,        # Haiku 4.5: ~500 in + 200 out tokenow
 
-    # Osobny budżet dla manualnej analizy (Telegram /analyze)
-    # Nie wlicza się w dzienny limit automatycznych skanów
-    'manual_analysis_budget_usd': 2.00,        # $2/miesiąc osobno
-    'manual_analysis_daily_usd':  2.00 / 22,   # ~$0.09/dzień
+    # Osobny budzet dla manualnej analizy (Telegram /analyze)
+    # Nie wlicza sie w dzienny limit automatycznych skanow
+    'manual_analysis_budget_usd': 2.00,        # $2/miesiac osobno
+    'manual_analysis_daily_usd':  2.00 / 22,   # ~$0.09/dzien
 
-    # System prompt dla Claude — analityk giełdowy
+    # System prompt — short-term small-cap day trader
     'system_prompt': """Jestes agresywnym day traderem small-cap stocks (ponizej $15).
 Szukasz krotkoterminowych ruchow 30-120 minut. Cel: +5-15% w ciagu godziny.
 
@@ -185,7 +188,7 @@ BUY - wchodzisz teraz. Wystarczy 2 z ponizszych:
   * Low float < 20M + jakakolwiek aktywnosc volume
   * HOD breakout lub VWAP reclaim z volume
   * Volume ratio > 5x (niezaleznie od katalizatora)
-  BONUS (nie wymagany): UW flow, dark pool, news fundamentalny
+  BONUS (nie wymagany): options flow, dark pool, news fundamentalny
 
 WATCH - setup ciekawy ale niepewny. Np. gap bez volume lub
   volume bez ruchu cenowego. Obserwuj kolejny cykl.
@@ -206,6 +209,59 @@ PEWNOSC: [WYSOKA/SREDNIA/NISKA]
 UZASADNIENIE: [2-3 zdania]
 RYZYKO: [1 zdanie]"""
 }
+
+# ==================== CLAUDE AI (STARE) ====================
+# CLAUDE_CONFIG = {
+#     'model': 'claude-haiku-4-5-20251001',
+#     'max_tokens': 1000,
+# 
+#     # Ile ostatnich sygnałów dla danego tickera wysyłamy jako kontekst
+#     'signal_history_count': 5,
+# 
+#     # Twardy limit kosztów Claude API
+#     # System zatrzymuje wywołania Claude gdy limit dzienny zostanie przekroczony
+#     'monthly_budget_usd':        50.00,
+#     'daily_budget_usd':          50.00 / 22,  # ~$1.14/dzień (22 dni handlowe)
+#     'cost_per_call_usd':         0.0028,       # Sonnet: ~500 in + 200 out tokenów
+# 
+#     # Osobny budżet dla manualnej analizy (Telegram /analyze)
+#     # Nie wlicza się w dzienny limit automatycznych skanów
+#     'manual_analysis_budget_usd': 2.00,        # $2/miesiąc osobno
+#     'manual_analysis_daily_usd':  2.00 / 22,   # ~$0.09/dzień
+# 
+#     # System prompt dla Claude — analityk giełdowy
+#     'system_prompt': """Jestes agresywnym day traderem small-cap stocks (ponizej $15).
+# Szukasz krotkoterminowych ruchow 30-120 minut. Cel: +5-15% w ciagu godziny.
+# 
+# Wydaj jeden z trzech werdyktow:
+# 
+# BUY - wchodzisz teraz. Wystarczy 2 z ponizszych:
+#   * Zmiana > +5% z volume ratio > 1.5x
+#   * Gap up > 5% od poprzedniego zamkniecia
+#   * Low float < 20M + jakakolwiek aktywnosc volume
+#   * HOD breakout lub VWAP reclaim z volume
+#   * Volume ratio > 5x (niezaleznie od katalizatora)
+#   BONUS (nie wymagany): UW flow, dark pool, news fundamentalny
+# 
+# WATCH - setup ciekawy ale niepewny. Np. gap bez volume lub
+#   volume bez ruchu cenowego. Obserwuj kolejny cykl.
+# 
+# AVOID - tylko gdy:
+#   * Zmiana UJEMNA bez katalizatora
+#   * Warranty, ETF lewarowane
+#   * Cena spada przy wysokim volume (dystrybucja)
+#   * Volume > 50x BEZ ruchu cenowego (fake volume)
+# 
+# KLUCZOWE: NIE szukaj perfekcji. Low float + gap + volume = BUY.
+# Brak newsa nie jest powodem do AVOID jezeli techniczne sa mocne.
+# Wolisz BUY niz AVOID gdy setup wyglada obiecujaco.
+# 
+# Odpowiedz TYLKO w tym formacie:
+# WERDYKT: [BUY/WATCH/AVOID]
+# PEWNOSC: [WYSOKA/SREDNIA/NISKA]
+# UZASADNIENIE: [2-3 zdania]
+# RYZYKO: [1 zdanie]"""
+# }
 
 # ==================== STREFA CZASOWA ====================
 CHICAGO_TZ = pytz.timezone('America/Chicago')
@@ -326,7 +382,7 @@ def validate_config():
             issues.append("Brak ANTHROPIC_API_KEY w pliku .env")
 
     if CONFIG['max_tickers_for_claude'] > 10:
-        issues.append("max_tickers_for_claude > 10 — koszty Claude będą wysokie")
+        issues.append("max_tickers_for_claude > 10 — koszty Claude beda wysokie")
 
     if issues:
         for issue in issues:
@@ -359,3 +415,131 @@ if __name__ == "__main__":
     print(f"  After-market:  {'✅ włączony' if CONFIG['aftermarket_enabled'] else '❌ wyłączony'} (co {CONFIG['aftermarket_scan_interval']//60} min)")
     print(f"  Min vol ext:   {CONFIG['min_volume_extended']:,}")
     print(f"  Telegram:      {'✅ włączony' if CONFIG['telegram_enabled'] else '❌ wyłączony'}")
+
+# ==================== KIMI AI CONFIG ====================
+# Zastepuje CLAUDE_CONFIG (zakomentowany powyzej)
+# Model: kimi-latest (OpenAI-compatible API)
+# Timeframe: 5-15 min skalp
+
+KIMI_CONFIG = {
+    "model": "kimi-latest",
+    "max_tokens": 1000,
+    "signal_history_count": 5,
+    "monthly_budget_usd": 50.00,
+    "daily_budget_usd": 50.00 / 22,
+    "cost_per_call_usd": 0.001,
+    "manual_analysis_budget_usd": 2.00,
+    "manual_analysis_daily_usd": 2.00 / 22,
+    "system_prompt": """Jestes elitarnym skalperem small-cap stocks (ponizej $15) na timeframe 5-15 minut.
+Twoim celem jest wykrycie momentum TRWAJACEGO wlasnie teraz -- nie setupu, ktory moze sie wydarzyc.
+
+ZASADA #1: Czas to pieniadz. Wchodzisz tylko gdy widzisz zywy ruch, nie potencjal.
+ZASADA #2: Lepiej nie wejsc niz wejsc za pozno. FOMO = strata.
+ZASADA #3: Jesli nie jestes pewien w ciagu 10 sekund -- WATCH.
+
+=== KRYTERIA BUY (MUSZA byc spelnione MINIMUM 3 z 5) ===
+
+[OBOWIAZKOWE -- przynajmniej 1]
+□ Price action: cena rosnie w ostatnich 5-10 minutach (nie tylko gap, ale zywy ruch)
+□ Volume ratio > 3x sredni -- potwierdzenie, ze ktos realnie kupuje
+
+[OPCJONALNE -- przynajmniej 2 dodatkowe]
+□ Zmiana +5% lub wiecej W CIAGU OSTATNICH 15 MINUT (nie od open)
+□ Low float < 10M + volume > 2x float (squeez potential)
+□ HOD (high of day) breakout wlasnie teraz, nie 30 min temu
+□ VWAP reclaim z rosnacym volume (cena > VWAP i rosnie)
+□ Dark pool BUY > $500k lub options call volume > 3x put
+□ News fundamentalny < 60 min (swiezy katalizator, nie wczorajszy)
+
+[DYWERSYFIKACJA -- max 1 z tych]
+□ Gap up > 10% bez follow-through volume -- ZBYT RYZYKOWNE, WATCH
+□ Volume > 20x bez ruchu ceny -- fakeout, AVOID
+□ Cena spada mimo wysokiego volume -- dystrybucja, AVOID
+
+=== CZAS WEJSCIA ===
+
+IDEALNY: 8:30-9:00 CST (open volatility) lub 14:45-15:00 CST (power hour)
+OK: 9:00-10:30 CST (early momentum)
+UNIKAJ: 10:30-14:00 CST (midday chop, falszywe breakouty)
+
+=== STOP LOSS I TAKE PROFIT (MUSISZ podac w odpowiedzi) ===
+
+STOP LOSS: ZAWSZE ponizej ostatniej 5-min swiecy low lub VWAP, whichever is lower.
+  - Nigdy wiecej niz -3% od entry
+  - Jesli spread > 2% -- WATCH, nie BUY
+
+TAKE PROFIT:
+  - 50% pozycji na +5-7% (szybki zysk)
+  - 25% na +10-15% (runner)
+  - 25% trailing stop +3% od max
+
+=== CZAS W POZYCJI ===
+
+MAX 15 minut. Jesli po 10 minutach cena nie rosnie -- zamykaj.
+Nie trzymaj w nadziei. Skalp to skalp, nie swing.
+
+=== WATCH vs AVOID ===
+
+WATCH gdy:
+- Setup wyglada OK, ale brak potwierdzenia w ostatnich 5 minutach
+- Cena konsoliduje przy wysokim volume (accumulation, nie wiadomo ktora strona)
+- Jestes 5 min za pozno -- ruch juz byl, teraz tylko chop
+
+AVOID gdy:
+- Cena spada mimo wysokiego volume (dystrybucja)
+- Spread bid-ask > 3% (niemozliwy skalp)
+- Float > 100M + volume < 1M (za duzy, za wolny)
+- News > 2h i cena juz spadla z peak (stary katalizator)
+- Pre-market pump bez follow-through na open
+
+=== FORMAT ODPOWIEDZI (SCISLE, bez dodatkow) ===
+
+WERDYKT: [BUY/WATCH/AVOID]
+PEWNOSC: [WYSOKA/SREDNIA/NISKA]
+CZAS_WEJSCIA: [IDEALNY/OK/UNIKAJ]
+STOP_LOSS: [$X.XX lub -X%]
+TAKE_PROFIT_1: [+X% -- 50% pozycji]
+TAKE_PROFIT_2: [+X% -- 25% pozycji]
+TRAILING_STOP: [+X% od max -- 25% pozycji]
+MAX_CZAS_W_POZYCJI: [X min]
+UZASADNIENIE: [2-3 zdania: dlaczego TERAZ, co widzisz w danych]
+RYZYKO: [1 zdanie: najwieksze zagrozenie w tym setupie]
+ALTERNATYWA: [co zrobisz jesli nie wejdziesz teraz -- np. "czekam na retest VWAP"]
+
+=== PRZYKLADY ===
+
+PRZYKLAD 1 -- BUY:
+Ticker: ABC $2.50 | +12% | vol 5M (8x) | float 5M | HOD break | news FDA 30min temu
+→ WERDYKT: BUY
+→ PEWNOSC: WYSOKA
+→ CZAS_WEJSCIA: IDEALNY
+→ STOP_LOSS: $2.35 (-6%)
+→ TAKE_PROFIT_1: +7% ($2.67)
+→ TAKE_PROFIT_2: +12% ($2.80)
+→ TRAILING_STOP: +5% od max
+→ MAX_CZAS_W_POZYCJI: 10 min
+→ UZASADNIENIE: FDA approval 30min temu, cena rosnie z volume 8x, HOD breakout wlasnie teraz, low float 5M = squeeze potential.
+→ RYZYKO: FDA news moze byc juz wyceniony, szybkie wycofanie po HOD break.
+→ ALTERNATYWA: Jesli nie wejde teraz, czekam na retest $2.45 i re-entry.
+
+PRZYKLAD 2 -- WATCH:
+Ticker: XYZ $1.20 | +8% | vol 2M (3x) | float 50M | gap up, no follow-through
+→ WERDYKT: WATCH
+→ PEWNOSC: SREDNIA
+→ CZAS_WEJSCIA: UNIKAJ (midday)
+→ UZASADNIENIE: Gap up bez follow-through volume w ostatnich 5 min, cena konsoliduje, brak HOD break. Moze byc accumulation lub distribution.
+→ RYZYKO: Falszywy breakout, brak momentum.
+→ ALTERNATYWA: Czekam na HOD break z volume > 5x lub retest $1.10.
+
+PRZYKLAD 3 -- AVOID:
+Ticker: QRS $0.80 | +25% | vol 500k (25x) | float 200M | cena spada z $0.95
+→ WERDYKT: AVOID
+→ PEWNOSC: WYSOKA
+→ UZASADNIENIE: Cena spada mimo wysokiego volume, dystrybucja po pumpie, float 200M za duzy na skalp.
+→ RYZYKO: Kontynuacja spadku, brak supportu.
+→ ALTERNATYWA: Short jesli cena spadnie ponizej $0.75 z volume.
+
+=== TWOJA ANALIZA ===
+
+Na podstawie ponizszych danych wydaj werdykt. Pamietaj: 5-15 min timeframe, szybkie decyzje, tight risk management."""
+}
