@@ -254,9 +254,10 @@ class MomentumScanner:
                 except Exception as e:
                     logger.warning(f"Momentum DB save error {ticker}: {e}")
 
-            # Wyslij Telegram
-            message = self._format_alert(ticker_data, trigger_name, trigger_desc)
-            self.send(message)
+            # Wyslij Telegram - USUNIETO (23.07.2026)
+            # Powod: Tryb 2 generowal zbyt duzo alertow. Sygnaly nadal
+            # trafiaja do DB + Alpaca execution, i zasilaja WS watchlist
+            # (patrz get_daily_alerts() + main.py _process_ws_fast_track)
 
             # Alpaca Paper Trading — tylko podczas sesji
             if self.alpaca_trader and self.alpaca_trader.enabled:
@@ -294,3 +295,13 @@ class MomentumScanner:
             'daily_tickers':   list(self._daily_alerts),
             'cooldown_active': sum(1 for t in self._alerted if not self._in_cooldown(t)),
         }
+
+    def get_daily_alerts(self):
+        """
+        Zwraca tickery ktore dzisiaj wywolaly trigger Trybu 2.
+        Uzywane przez WebSocket opening bell do rozszerzenia watchlisty
+        (main.py _process_ws_fast_track) - dobre kandydaty warte
+        obserwacji real-time, nawet bez wysylania alertu Telegram.
+        """
+        self._reset_daily()
+        return list(self._daily_alerts)

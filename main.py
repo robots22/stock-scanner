@@ -199,6 +199,7 @@ class StockScanner:
         self.fast_track_lock    = threading.Lock()
         self.polygon_ws         = PolygonWebSocket(self.fast_track_queue, self.fast_track_lock)
         self._ws_active         = False
+        self._ws_base_tickers   = set()
         self._ws_processed      = set()
         self._ws_processed_date = None
 
@@ -687,7 +688,8 @@ class StockScanner:
 
                 self.polygon_ws.update_universe(watch_tickers)
                 self.polygon_ws.start()
-                self._ws_active = True
+                self._ws_active       = True
+                self._ws_base_tickers = set(watch_tickers)
                 logger.info(f"WS opening bell: START — {len(watch_tickers)} tickerow "
                             f"(aktywne do 10:00 CST)")
             except Exception as e:
@@ -708,7 +710,24 @@ class StockScanner:
         Przetwarza kolejke WebSocket fast-track (volume spikes na zywo).
         Wywolywane co iteracje glownej petli (~30s) - szybciej niz REST 5-min.
         Jeden Claude call per ticker per dzien (jak reszta systemu).
+
+        Rozszerza tez subskrypcje WS o tickery ktore Tryb 2 wykryl
+        (GAP_MONSTER/NANO_CAP/MICRO_CAP/LOW_FLOAT) - te sygnaly nie
+        wysylaja juz alertu Telegram, ale sa dobrymi kandydatami do
+        obserwacji real-time.
         """
+        try:
+            momentum_tickers = set(self.momentum.get_daily_alerts())
+            combined = self._ws_base_tickers | momentum_tickers
+            if combined != self._ws_base_tickers:
+                new_ones = combined - self._ws_base_tickers
+                logger.info(f"WS: +{len(new_ones)} tickerow z Trybu 2 do watchlisty "
+                            f"({', '.join(list(new_ones)[:10])})")
+                self.polygon_ws.update_universe(combined)
+                self._ws_base_tickers = combined
+        except Exception as e:
+            logger.warning(f"WS momentum merge error: {e}")
+
         with self.fast_track_lock:
             items = self.fast_track_queue.copy()
             self.fast_track_queue.clear()
