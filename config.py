@@ -167,9 +167,10 @@ CLAUDE_CONFIG = {
 
     # Twardy limit kosztow Claude API
     # System zatrzymuje wywolania Claude gdy limit dzienny zostanie przekroczony
-    'monthly_budget_usd':        15.00,
-    'daily_budget_usd':          15.00 / 22,   # ~$0.68/dzien (22 dni handlowe)
-    'cost_per_call_usd':         0.001,        # Haiku 4.5: ~500 in + 200 out tokenow
+    'monthly_budget_usd':        35.00,
+    'daily_budget_usd':          35.00 / 22,   # ~$1.59/dzien (22 dni handlowe)
+    'cost_per_call_usd':         0.006,        # Realny koszt zmierzony 23.07: $0.0055-0.0067/call
+                                                # (prompt scalp 5-15min ~1000-1150 tokenow input)
 
     # Osobny budzet dla manualnej analizy (Telegram /analyze)
     # Nie wlicza sie w dzienny limit automatycznych skanow
