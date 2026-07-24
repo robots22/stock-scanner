@@ -245,3 +245,5 @@ uw_backup_*.json
 *.bak_*
 patch_*.py
 =*
+*.backup
+.vscode/

@@ -132,8 +132,14 @@ class PolygonWebSocket:
     # ==================== WEBSOCKET CALLBACKS ====================
 
     def _on_open(self, ws):
-        logger.info("WS połączono z Polygon")
+        logger.info("WS połączono z Polygon — wysyłam auth od razu")
         self.connected = True
+        # Autoryzuj natychmiast, nie czekaj na 'connected' event
+        try:
+            ws.send(json.dumps({'action': 'auth', 'params': POLYGON_API_KEY}))
+            logger.info("WS: auth message wysłany")
+        except Exception as e:
+            logger.error(f"WS: błąd wysyłania auth: {e}")
 
     def _on_message(self, ws, message):
         """Przetwarza wiadomości z WebSocket."""

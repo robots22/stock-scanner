@@ -27,6 +27,8 @@ from config import logger, CONFIG, ALPACA_API_KEY, ALPACA_SECRET_KEY, now_chicag
 # ==================== KONFIGURACJA ====================
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
+ALPACA_TRADING_URL = "https://paper-api.alpaca.markets"  # Paper trading
+# ALPACA_TRADING_URL = "https://api.alpaca.markets"       # Live trading
 ALPACA_TIMEOUT  = 15
 
 

@@ -73,6 +73,7 @@ from telegram_bot import (start_bot_thread, manual_queue, manual_queue_lock,
                           system_paused, system_paused_lock, system_state)
 from alpaca_trader import AlpacaPaperTrader
 from momentum_scan import MomentumScanner
+from polygon_ws import PolygonWebSocket
 from float_cache import FloatCache
 from news_rss import NewsRSSScanner
 
@@ -190,6 +191,16 @@ class StockScanner:
             save_signal_fn   = save_momentum_signal,
             alpaca_trader    = self.trader,
         )
+
+        # WebSocket dla opening bell (8:15-10:00 CST)
+        # Real-time AM bary zamiast REST co 5 min - wykrycie w sekundach
+        # zamiast minutach. Advanced plan Polygon = unlimited connections.
+        self.fast_track_queue   = []
+        self.fast_track_lock    = threading.Lock()
+        self.polygon_ws         = PolygonWebSocket(self.fast_track_queue, self.fast_track_lock)
+        self._ws_active         = False
+        self._ws_processed      = set()
+        self._ws_processed_date = None
 
         # Float Cache - persystowany, odswiezany co 7 dni
         self.float_cache = FloatCache(polygon_api=self.polygon)
@@ -639,6 +650,139 @@ class StockScanner:
         self._check_active_signals()
 
         self.last_uw_scan = now_chicago()
+
+    # ==================== WEBSOCKET OPENING BELL ====================
+
+    def _manage_websocket_window(self):
+        """
+        Zarzadza WebSocket dla okna otwarcia rynku (8:15-10:00 CST).
+        Startuje subskrypcje na top gainerow, zatrzymuje po 10:00.
+        Poza tym oknem WS jest wylaczony - REST 5-min cykl wystarcza.
+        """
+        n = now_chicago()
+        if n.weekday() >= 5:
+            return
+
+        ws_start = n.replace(hour=8,  minute=15, second=0, microsecond=0)
+        ws_end   = n.replace(hour=10, minute=0,  second=0, microsecond=0)
+        should_be_active = ws_start <= n < ws_end
+
+        if should_be_active and not self._ws_active:
+            try:
+                universe = self.polygon.get_universe(
+                    min_volume=CONFIG.get('min_volume_extended', 10_000)
+                )
+                candidates = [
+                    t for t in universe
+                    if 0.10 <= t.get('price', 0) <= 15.0
+                    and t.get('volume', 0) >= 50_000
+                ]
+                candidates.sort(key=lambda t: abs(t.get('gap_pct', 0) or t.get('change_pct', 0)),
+                              reverse=True)
+                watch_tickers = [t['ticker'] for t in candidates[:40]]
+
+                if not watch_tickers:
+                    logger.warning("WS opening bell: brak kandydatow, pomijam start")
+                    return
+
+                self.polygon_ws.update_universe(watch_tickers)
+                self.polygon_ws.start()
+                self._ws_active = True
+                logger.info(f"WS opening bell: START — {len(watch_tickers)} tickerow "
+                            f"(aktywne do 10:00 CST)")
+            except Exception as e:
+                logger.error(f"WS start error: {e}")
+
+        elif not should_be_active and self._ws_active:
+            try:
+                stats = self.polygon_ws.get_stats()
+                self.polygon_ws.stop()
+                self._ws_active = False
+                logger.info(f"WS opening bell: STOP — bary {stats['bars_received']} "
+                            f"spiki {stats['spikes_detected']}")
+            except Exception as e:
+                logger.error(f"WS stop error: {e}")
+
+    def _process_ws_fast_track(self):
+        """
+        Przetwarza kolejke WebSocket fast-track (volume spikes na zywo).
+        Wywolywane co iteracje glownej petli (~30s) - szybciej niz REST 5-min.
+        Jeden Claude call per ticker per dzien (jak reszta systemu).
+        """
+        with self.fast_track_lock:
+            items = self.fast_track_queue.copy()
+            self.fast_track_queue.clear()
+
+        if not items:
+            return
+
+        today = now_chicago().date()
+        if self._ws_processed_date != today:
+            self._ws_processed      = set()
+            self._ws_processed_date = today
+
+        for item in items:
+            ticker = item['ticker']
+            if ticker in self._ws_processed:
+                continue
+            self._ws_processed.add(ticker)
+
+            try:
+                logger.info(f"WS Fast Track: {ticker} — {item['reason']}")
+
+                ticker_data = self.polygon.get_ticker_details(ticker)
+                if not ticker_data or ticker_data.get('price', 0) <= 0:
+                    continue
+
+                ticker_data['ticker']  = ticker
+                ticker_data['reasons'] = [item['reason']]
+                ticker_data['score']   = 65  # WS spike = wysoki priorytet
+
+                result = self.analyst.analyze(
+                    ticker_data,
+                    news=self.polygon.get_news(ticker),
+                    signal_history=get_signal_history(ticker),
+                )
+
+                signal_id = save_signal(result, ticker_data, polygon_api=self.polygon)
+
+                if result.get('verdict') == 'BUY' and signal_id:
+                    try:
+                        from database import get_connection
+                        conn = get_connection()
+                        c    = conn.cursor()
+                        c.execute(
+                            'SELECT stop_loss, take_profit, rr_ratio, '
+                            'risk_pct, reward_pct, sl_basis '
+                            'FROM signals WHERE id = ?', (signal_id,)
+                        )
+                        row = c.fetchone()
+                        conn.close()
+                        if row:
+                            result['stop_loss']   = row[0]
+                            result['take_profit'] = row[1]
+                            result['rr_ratio']    = row[2]
+                            result['risk_pct']    = row[3]
+                            result['reward_pct']  = row[4]
+                            result['sl_basis']    = row[5]
+                    except Exception:
+                        pass
+
+                self._send_alert(result, ticker_data)
+
+                if result.get('verdict') == 'BUY' and self.trader.enabled:
+                    try:
+                        self.trader.buy(
+                            ticker=ticker,
+                            entry_price=ticker_data.get('price', 0),
+                            stop_loss=result.get('stop_loss'),
+                            take_profit=result.get('take_profit'),
+                        )
+                    except Exception as e:
+                        logger.error(f"WS Fast Track Alpaca BUY error: {e}")
+
+            except Exception as e:
+                logger.error(f"WS fast track error dla {ticker}: {e}")
 
     # ==================== MONITORING AKTYWNYCH BUY ====================
 
@@ -1421,6 +1565,14 @@ class StockScanner:
                     except Exception as e:
                         logger.error(f"Błąd cyklu UW: {e}")
 
+                # WebSocket opening bell (8:15-10:00 CST) — real-time detekcja
+                try:
+                    self._manage_websocket_window()
+                    if self._ws_active:
+                        self._process_ws_fast_track()
+                except Exception as e:
+                    logger.error(f"Błąd WS opening bell: {e}")
+
                 # Reset flagi watchlist o polnocy
                 if now_chicago().hour == 0:
                     self._watchlist_sent_today = False
@@ -1536,6 +1688,14 @@ class StockScanner:
         print("\n" + "="*55)
         print("  ZATRZYMYWANIE SYSTEMU...")
         print("="*55)
+
+        # Zatrzymaj WebSocket jesli aktywny
+        if self._ws_active:
+            try:
+                self.polygon_ws.stop()
+                logger.info("WS opening bell zatrzymany przy shutdown")
+            except Exception:
+                pass
 
         # Telegram bot v2.0 zatrzymuje się automatycznie (daemon thread)
 
